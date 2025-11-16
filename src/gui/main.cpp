@@ -1,9 +1,9 @@
 #define GL_SILENCE_DEPRECATION
 #include <GLFW/glfw3.h>
 #include <GL/gl.h>
-#include "../../../WindowsEdition/OpenVR-SpaceCalibrator/lib/imgui/imgui.h"
-#include "../../../WindowsEdition/OpenVR-SpaceCalibrator/lib/imgui/backends/imgui_impl_glfw.h"
-#include "../../../WindowsEdition/OpenVR-SpaceCalibrator/lib/imgui/backends/imgui_impl_opengl3.h"
+#include "../../lib/imgui/imgui.h"
+#include "../../lib/imgui/backends/imgui_impl_glfw.h"
+#include "../../lib/imgui/backends/imgui_impl_opengl3.h"
 #include "../core/BaseStationDetector.h"
 #include "../core/BaseStationController.h"
 #include "../core/SteamVRMonitor.h"

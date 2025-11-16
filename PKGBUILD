@@ -36,15 +36,15 @@ prepare() {
     tar -xzf "${srcdir}/openvr-headers.tar.gz" -C ../lib/openvr/lib --strip-components=1 openvr-master/bin/linux64/libopenvr_api.so 2>/dev/null || true
   fi
   
-  if [ ! -d "../WindowsEdition/OpenVR-SpaceCalibrator/lib/imgui" ]; then
+  if [ ! -d "lib/imgui" ]; then
     echo "Extracting ImGui..."
-    mkdir -p ../WindowsEdition/OpenVR-SpaceCalibrator/lib
+    mkdir -p lib
     if [ -d "${srcdir}/imgui-master" ]; then
-      mv "${srcdir}/imgui-master" ../WindowsEdition/OpenVR-SpaceCalibrator/lib/imgui
+      mv "${srcdir}/imgui-master" lib/imgui
     else
-      tar -xzf "${srcdir}/imgui.tar.gz" -C ../WindowsEdition/OpenVR-SpaceCalibrator/lib --strip-components=1 imgui-master 2>/dev/null || \
-      tar -xzf "${srcdir}/imgui.tar.gz" -C ../WindowsEdition/OpenVR-SpaceCalibrator/lib --strip-components=0 2>/dev/null && \
-      mv ../WindowsEdition/OpenVR-SpaceCalibrator/lib/imgui-master ../WindowsEdition/OpenVR-SpaceCalibrator/lib/imgui 2>/dev/null || true
+      tar -xzf "${srcdir}/imgui.tar.gz" -C lib --strip-components=1 imgui-master 2>/dev/null || \
+      tar -xzf "${srcdir}/imgui.tar.gz" -C lib --strip-components=0 2>/dev/null && \
+      mv lib/imgui-master lib/imgui 2>/dev/null || true
     fi
   fi
 }
