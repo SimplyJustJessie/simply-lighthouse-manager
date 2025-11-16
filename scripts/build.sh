@@ -98,6 +98,18 @@ if [ ! -f "$OPENVR_INCLUDE_CHECK" ]; then
     exit 1
 fi
 
+# Check for ImGui (required for GUI build)
+if [ "$BUILD_GUI" = true ]; then
+    IMGUI_CHECK="$PROJECT_ROOT/lib/imgui/imgui.h"
+    if [ ! -f "$IMGUI_CHECK" ]; then
+        echo "[-] ImGui not found at $IMGUI_CHECK"
+        echo "[-] Please extract ImGui to: $PROJECT_ROOT/lib/imgui/"
+        echo "[-] Download from: https://github.com/ocornut/imgui"
+        echo "[-] Or run: git clone https://github.com/ocornut/imgui.git $PROJECT_ROOT/lib/imgui"
+        exit 1
+    fi
+fi
+
 if [ "$BUILD_CLI" = true ]; then
     if ! make; then
         echo "[-] CLI build failed"

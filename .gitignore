@@ -97,6 +97,23 @@ eigen.tar.gz
 imgui.tar.gz
 openvr-headers.tar.gz
 
+# Lib folder (extracted dependencies, not committed)
+# But allow lib/imgui source files to be committed
+lib/
+!lib/imgui/
+lib/imgui/.git/
+lib/imgui/examples/
+lib/imgui/docs/
+lib/imgui/misc/
+lib/imgui/.github/
+lib/imgui/.editorconfig
+lib/imgui/.gitignore
+lib/imgui/.gitattributes
+lib/imgui/README.md
+lib/imgui/LICENSE.txt
+lib/imgui/*.md
+lib/imgui/*.txt
+
 # Local configuration
 *.local
 .env
@@ -109,11 +126,4 @@ overlay.log
 # ImGui ini files (user preferences)
 imgui.ini
 **/imgui.ini
-
-# WindowsEdition compiled files (keep source, ignore compiled objects)
-WindowsEdition/**/*.o
-WindowsEdition/**/*.a
-WindowsEdition/**/*.so
-WindowsEdition/**/*.dll
-WindowsEdition/**/*.exe
 
