@@ -10,10 +10,8 @@ install="${pkgname}.install"
 depends=('bluez-libs' 'dbus' 'glfw-x11' 'libx11')
 makedepends=('cmake' 'base-devel' 'pkgconf')
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/xi-ve/openvr-lighthouse-manager-linux/archive/main.tar.gz"
-        "openvr-headers.tar.gz::https://github.com/ValveSoftware/openvr/archive/master.tar.gz"
-        "imgui.tar.gz::https://github.com/ocornut/imgui/archive/refs/heads/master.tar.gz")
+        "openvr-headers.tar.gz::https://github.com/ValveSoftware/openvr/archive/master.tar.gz")
 sha256sums=('SKIP'
-            'SKIP'
             'SKIP')
 
 prepare() {
@@ -36,16 +34,9 @@ prepare() {
     tar -xzf "${srcdir}/openvr-headers.tar.gz" -C ../lib/openvr/lib --strip-components=1 openvr-master/bin/linux64/libopenvr_api.so 2>/dev/null || true
   fi
   
+  # ImGui is committed to the repository, no extraction needed
   if [ ! -d "lib/imgui" ]; then
-    echo "Extracting ImGui..."
-    mkdir -p lib
-    if [ -d "${srcdir}/imgui-master" ]; then
-      mv "${srcdir}/imgui-master" lib/imgui
-    else
-      tar -xzf "${srcdir}/imgui.tar.gz" -C lib --strip-components=1 imgui-master 2>/dev/null || \
-      tar -xzf "${srcdir}/imgui.tar.gz" -C lib --strip-components=0 2>/dev/null && \
-      mv lib/imgui-master lib/imgui 2>/dev/null || true
-    fi
+    echo "WARNING: lib/imgui not found in repository"
   fi
 }
 

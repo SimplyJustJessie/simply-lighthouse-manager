@@ -4,6 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 INSTALL_DIR="$HOME/.local/share/SteamVR/drivers/lighthouse-manager/bin/linux64"
+DRIVER_DIR="$HOME/.local/share/SteamVR/drivers/lighthouse-manager"
 MANIFEST="$INSTALL_DIR/manifest.vrmanifest"
 
 STEAMVR_PATHS=(
@@ -26,15 +27,24 @@ if [ -z "$VRPATHREG" ] && command -v vrpathreg &> /dev/null; then
     VRPATHREG="vrpathreg"
 fi
 
-if [ -n "$VRPATHREG" ] && [ -f "$MANIFEST" ]; then
+if [ -n "$VRPATHREG" ] && [ -d "$DRIVER_DIR" ]; then
     if [ -f "$VRPATHREG" ]; then
         VRPATHREG_DIR="$(dirname "$VRPATHREG")"
         export LD_LIBRARY_PATH="$VRPATHREG_DIR:$LD_LIBRARY_PATH"
     fi
     
-    echo "[+] Unregistering manifest from SteamVR..."
-    "$VRPATHREG" removedriver "$INSTALL_DIR" 2>/dev/null || true
-    "$VRPATHREG" removeappmanifest "$MANIFEST" 2>/dev/null || true
+    echo "[+] Unregistering driver from SteamVR..."
+    # removedriver needs the driver directory (parent of bin/linux64)
+    "$VRPATHREG" removedriver "$DRIVER_DIR" 2>/dev/null || true
+    # Note: Overlays are registered via OpenVR API, not vrpathreg
+    # Removing the overlay config file will prevent it from auto-launching
+fi
+
+# Remove overlay config file (prevents auto-launch)
+OVERLAY_CONFIG="$HOME/.local/share/Steam/config/vrappconfig/lighthouse-manager-linux.vrappconfig"
+if [ -f "$OVERLAY_CONFIG" ]; then
+    echo "[+] Removing overlay config..."
+    rm -f "$OVERLAY_CONFIG" 2>/dev/null || true
 fi
 
 if [ -d "$INSTALL_DIR" ]; then

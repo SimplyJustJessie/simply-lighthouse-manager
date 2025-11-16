@@ -89,40 +89,9 @@ post_remove() {
             fi
         done
         
-        if [ -z "$VRPATHREG" ] && command -v vrpathreg &> /dev/null; then
-            VRPATHREG="vrpathreg"
-        fi
-        
-        # Remove overlay registration
-        MANIFEST="$INSTALL_DIR/bin/linux64/manifest.vrmanifest"
-        if [ -f "$MANIFEST" ] && [ -n "$VRPATHREG" ]; then
-            echo "Removing overlay registration..." >&2
-            if [ -f "$VRPATHREG" ]; then
-                VRPATHREG_DIR="$(dirname "$VRPATHREG")"
-                LD_LIBRARY_PATH="$VRPATHREG_DIR:$LD_LIBRARY_PATH" "$VRPATHREG" removeappmanifest "$MANIFEST" 2>/dev/null || {
-                    echo "Note: Overlay unregistration failed (may not have been registered)" >&2
-                }
-            else
-                "$VRPATHREG" removeappmanifest "$MANIFEST" 2>/dev/null || {
-                    echo "Note: Overlay unregistration failed (may not have been registered)" >&2
-                }
-            fi
-        fi
-        
-        # Remove driver registration
-        if [ -n "$VRPATHREG" ]; then
-            echo "Removing driver registration..." >&2
-            if [ -f "$VRPATHREG" ]; then
-                VRPATHREG_DIR="$(dirname "$VRPATHREG")"
-                LD_LIBRARY_PATH="$VRPATHREG_DIR:$LD_LIBRARY_PATH" "$VRPATHREG" removedriver "$INSTALL_DIR/bin/linux64" 2>/dev/null || {
-                    echo "Note: Driver unregistration failed (may not have been registered)" >&2
-                }
-            else
-                "$VRPATHREG" removedriver "$INSTALL_DIR/bin/linux64" 2>/dev/null || {
-                    echo "Note: Driver unregistration failed (may not have been registered)" >&2
-                }
-            fi
-        fi
+        # Note: Lighthouse Manager is an overlay application, not a driver
+        # Overlays are registered via OpenVR API, not vrpathreg
+        # Removing the overlay config file will prevent it from auto-launching
         
         # Remove files
         echo "Removing installation files..." >&2
