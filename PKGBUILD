@@ -48,38 +48,14 @@ build() {
   export CFLAGS="${CFLAGS//-ffile-prefix-map=* /} -Wno-format-security"
   export CXXFLAGS="${CXXFLAGS//-ffile-prefix-map=* /} -Wno-format-security"
   
-  mkdir -p build
-  cd build
+  # Use Makefile (handles both CLI and GUI builds with ImGui)
+  # Makefile expects OPENVR_DIR to be set relative to project root
+  # It will look for ../lib/openvr/headers and ../lib/openvr/lib/linux64
   
-  PROJECT_ROOT="${srcdir}/${pkgname}-main"
-  OPENVR_HEADERS=""
-  
-  if [ -f "${PROJECT_ROOT}/../lib/openvr/headers/openvr.h" ]; then
-    OPENVR_HEADERS="${PROJECT_ROOT}/../lib/openvr/headers"
-  elif [ -f "${HOME}/.local/share/Steam/steamapps/common/SteamVR/headers/openvr.h" ]; then
-    OPENVR_HEADERS="${HOME}/.local/share/Steam/steamapps/common/SteamVR/headers"
-  elif [ -f "${HOME}/.steam/steam/steamapps/common/SteamVR/headers/openvr.h" ]; then
-    OPENVR_HEADERS="${HOME}/.steam/steam/steamapps/common/SteamVR/headers"
-  elif [ -f "${HOME}/.steam/root/steamapps/common/SteamVR/headers/openvr.h" ]; then
-    OPENVR_HEADERS="${HOME}/.steam/root/steamapps/common/SteamVR/headers"
-  fi
-  
-  CMAKE_ARGS=""
-  if [ -n "$OPENVR_HEADERS" ]; then
-    echo "Using OpenVR headers from: $OPENVR_HEADERS"
-    CMAKE_ARGS="-DOPENVR_INCLUDE_DIR=\"$OPENVR_HEADERS\""
-  else
-    echo "OpenVR headers not found in standard locations."
-    echo "CMake will attempt to find them using its own detection logic."
-  fi
-  
-  # Use Makefile instead of CMake (Makefile handles both CLI and GUI builds with ImGui)
-  cd "${srcdir}/${pkgname}-main"
-  
-  # Set OPENVR_INCLUDE for Makefile
-  export OPENVR_DIR="${PROJECT_ROOT}/../lib/openvr"
-  
+  # Build CLI version
   make -j$(nproc)
+  
+  # Build GUI version
   make -j$(nproc) gui
 }
 
