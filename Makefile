@@ -61,14 +61,22 @@ $(BUILD_DIR)/%.o: %.cpp
 $(TARGET): $(OBJECTS)
 	@echo "Linking $@..."
 	@mkdir -p $(dir $@)
+	@if [ ! -f "$(OPENVR_LIB_DIR)/libopenvr_api.so" ]; then \
+		echo "ERROR: OpenVR library not found at $(OPENVR_LIB_DIR)/libopenvr_api.so"; \
+		exit 1; \
+	fi
 	@OPENVR_LIB_ABS=$$(cd "$(OPENVR_LIB_DIR)" && pwd); \
-	$(CXX) $(OBJECTS) -o "$@" $(LDFLAGS) -Wl,-rpath,"$$OPENVR_LIB_ABS" -Wl,-rpath,'$$ORIGIN/../../../lib/openvr/lib/linux64' $(LIBS)
+	$(CXX) $(OBJECTS) -o "$@" $(LDFLAGS) -L"$$OPENVR_LIB_ABS" -Wl,-rpath,"$$OPENVR_LIB_ABS" -Wl,-rpath,'$$ORIGIN/../../../lib/openvr/lib/linux64' -lopenvr_api -lbluetooth -ldbus-1 -lGL -lX11
 
 $(GUI_TARGET): $(GUI_OBJECTS) $(IMGUI_OBJECTS)
 	@echo "Linking $@..."
 	@mkdir -p $(dir $@)
+	@if [ ! -f "$(OPENVR_LIB_DIR)/libopenvr_api.so" ]; then \
+		echo "ERROR: OpenVR library not found at $(OPENVR_LIB_DIR)/libopenvr_api.so"; \
+		exit 1; \
+	fi
 	@OPENVR_LIB_ABS=$$(cd "$(OPENVR_LIB_DIR)" && pwd); \
-	$(CXX) $(GUI_OBJECTS) $(IMGUI_OBJECTS) -o "$@" $(LDFLAGS) -Wl,-rpath,"$$OPENVR_LIB_ABS" -Wl,-rpath,'$$ORIGIN/../../../lib/openvr/lib/linux64' $(GUI_LIBS)
+	$(CXX) $(GUI_OBJECTS) $(IMGUI_OBJECTS) -o "$@" $(LDFLAGS) -L"$$OPENVR_LIB_ABS" -Wl,-rpath,"$$OPENVR_LIB_ABS" -Wl,-rpath,'$$ORIGIN/../../../lib/openvr/lib/linux64' -lopenvr_api -lbluetooth -ldbus-1 -lGL -lX11 -lglfw
 
 $(BUILD_DIR)/$(IMGUI_DIR)/%.o: $(IMGUI_DIR)/%.cpp
 	@echo "Compiling $<..."
