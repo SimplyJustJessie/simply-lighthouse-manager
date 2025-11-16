@@ -1,0 +1,16 @@
+{
+	"source": "builtin",
+	"applications": [{
+		"app_key": "lighthouse-manager-linux",
+		"launch_type": "binary",
+		"binary_path_linux": "lighthouse-manager-gui",
+		"is_dashboard_overlay": true,
+		"strings": {
+			"en_us": {
+				"name": "Lighthouse Manager",
+				"description": "Base Station Power Management - Linux port by @xi-ve"
+			}
+		}
+	}]
+}
+
