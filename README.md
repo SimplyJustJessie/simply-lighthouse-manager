@@ -4,6 +4,35 @@ This is a Linux port of [OVR Lighthouse Manager](https://github.com/kurotu/OVR-L
 
 **Linux Port Maintainer:** [@xi-ve](https://github.com/xi-ve)
 
+## Installation
+
+### Arch Linux (AUR)
+
+This package is available on the Arch User Repository (AUR):
+
+```bash
+yay -S openvr-lighthouse-manager-linux
+```
+
+Or using `makepkg`:
+
+```bash
+git clone https://aur.archlinux.org/openvr-lighthouse-manager-linux.git
+cd openvr-lighthouse-manager-linux
+makepkg -si
+```
+
+**AUR Package:** [openvr-lighthouse-manager-linux](https://aur.archlinux.org/packages/openvr-lighthouse-manager-linux)
+
+The AUR package will automatically:
+- Install binaries to `/usr/bin`
+- Register the overlay with SteamVR on installation
+- Handle updates and uninstallation
+
+### Building from Source
+
+If you prefer to build from source or are using a different distribution, see the [Building](#building) section below.
+
 ## Requirements
 
 ### System Requirements
@@ -34,6 +63,8 @@ sudo pacman -S base-devel pkg-config bluez-libs dbus glfw
 
 ## Building
 
+If you're building from source:
+
 ```bash
 ./scripts/build.sh
 ```
@@ -43,7 +74,7 @@ The build script will:
 - Compile both CLI and GUI versions
 - Output binaries to `build/bin/`
 
-## Installation
+### Manual Installation (from source)
 
 To install as a SteamVR addon (auto-launches with SteamVR):
 
