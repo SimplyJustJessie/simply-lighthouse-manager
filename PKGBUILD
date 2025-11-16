@@ -29,6 +29,13 @@ prepare() {
     tar -xzf "${srcdir}/openvr-headers.tar.gz" -C ../lib/openvr --strip-components=1 openvr-master/headers 2>/dev/null || true
   fi
   
+  if [ ! -d "../lib/openvr/lib/linux64" ]; then
+    echo "Extracting OpenVR library..."
+    mkdir -p ../lib/openvr/lib/linux64
+    tar -xzf "${srcdir}/openvr-headers.tar.gz" -C ../lib/openvr/lib/linux64 --strip-components=1 openvr-master/bin/linux64/libopenvr_api.so 2>/dev/null || \
+    tar -xzf "${srcdir}/openvr-headers.tar.gz" -C ../lib/openvr/lib --strip-components=1 openvr-master/bin/linux64/libopenvr_api.so 2>/dev/null || true
+  fi
+  
   if [ ! -d "../WindowsEdition/OpenVR-SpaceCalibrator/lib/imgui" ]; then
     echo "Extracting ImGui..."
     mkdir -p ../WindowsEdition/OpenVR-SpaceCalibrator/lib
