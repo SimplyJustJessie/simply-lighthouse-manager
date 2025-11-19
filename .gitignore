@@ -127,3 +127,9 @@ overlay.log
 imgui.ini
 **/imgui.ini
 
+# AUR-specific files (only needed in AUR repo)
+PKGBUILD
+.SRCINFO
+*.install
+openvr-lighthouse-manager-install.sh
+
