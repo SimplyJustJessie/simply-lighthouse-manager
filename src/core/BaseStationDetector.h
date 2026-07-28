@@ -1,8 +1,9 @@
 #pragma once
 
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
 
 struct BaseStationInfo
 {
@@ -13,31 +14,37 @@ struct BaseStationInfo
     bool isBaseStation1;
     bool isConnected;
     bool isPowered;
-    
+
     BaseStationInfo() : isBaseStation1(false), isConnected(false), isPowered(false) {}
 };
+
+namespace bluez
+{
+class Client;
+}
 
 class BaseStationDetector
 {
 public:
     BaseStationDetector();
     ~BaseStationDetector();
-    
+
     bool Initialize();
     void Shutdown();
-    
-    std::vector<BaseStationInfo> ScanForBaseStations(int timeoutSeconds = 10);
-    bool ConnectToBaseStation(const std::string& address);
-    void DisconnectFromBaseStation(const std::string& address);
-    bool CheckBaseStationStatus(BaseStationInfo& station);
-    
-    bool IsBluetoothAvailable() const;
-    
-private:
-    int bluetoothAdapter;
-    bool initialized;
-    
-    bool CheckBluetoothAdapter();
-    BaseStationInfo ParseAdvertisementData(const std::string& address, const void* data, size_t length);
-};
 
+    // Lists base stations BlueZ already knows, then runs an LE discovery for
+    // up to timeoutSeconds picking up stations as they advertise. A provided
+    // shouldCancel callback is checked about once a second and ends the scan
+    // early (returning what was found so far).
+    std::vector<BaseStationInfo> ScanForBaseStations(
+        int timeoutSeconds = 10, const std::function<bool()>& shouldCancel = {});
+
+    bool IsBluetoothAvailable() const;
+
+private:
+    std::unique_ptr<bluez::Client> client;
+    std::string adapterPath;
+    bool initialized;
+
+    void CollectStations(std::vector<BaseStationInfo>& stations);
+};

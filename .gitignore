@@ -1,5 +1,7 @@
 # Build directories
 build/
+build-*/
+build2/
 **/build/
 cmake-build-*/
 
@@ -127,9 +129,9 @@ overlay.log
 imgui.ini
 **/imgui.ini
 
-# AUR-specific files (only needed in AUR repo)
-PKGBUILD
-.SRCINFO
-*.install
-openvr-lighthouse-manager-install.sh
+# AUR working files at the repo root (the canonical packaging lives in packaging/)
+/PKGBUILD
+/.SRCINFO
+!packaging/PKGBUILD
+!packaging/*.install
 

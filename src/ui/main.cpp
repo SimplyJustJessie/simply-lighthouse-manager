@@ -1,25 +1,25 @@
-#include <iostream>
-#include <vector>
-#include <string>
-#include <set>
-#include <unistd.h>
-#include <limits.h>
-#include "../core/BaseStationDetector.h"
-#include "../core/BaseStationController.h"
-#include "../core/SteamVRMonitor.h"
-#include <thread>
+#include <openvr.h>
 #include <chrono>
 #include <csignal>
-#include <openvr.h>
+#include <iostream>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
 
-static bool running = true;
+#include "../core/AutoManager.h"
+#include "../core/BaseStationController.h"
+#include "../core/BaseStationDetector.h"
+#include "../core/Config.h"
+#include "../core/SteamVRWatcher.h"
+#include "../core/VRRegistration.h"
 
-void signalHandler(int)
+static volatile std::sig_atomic_t g_signal = 0;
+
+extern "C" void signalHandler(int)
 {
-    running = false;
+    g_signal = 1;
 }
-
-void RegisterManifest(bool verbose = false);
 
 void PrintUsage(const char* programName)
 {
@@ -30,20 +30,28 @@ void PrintUsage(const char* programName)
     std::cout << "  --enable, --wake <id>    Wake up a base station (by ID or address)\n";
     std::cout << "  --disable, --sleep <id>  Put a base station to sleep (by ID or address)\n";
     std::cout << "  --standby <id>           Put a base station to standby (by ID or address)\n";
-    std::cout << "  --auto                   Automatically manage base stations based on SteamVR status\n";
-    std::cout << "  --register-manifest      Register application manifest with SteamVR\n";
+    std::cout << "  --auto                   Manage base stations for the current SteamVR session\n";
+    std::cout << "                           (used by the SteamVR auto-launch entry)\n";
+    std::cout << "  --list-managed           Show the auto-manage configuration\n";
+    std::cout << "  --manage <id>            Include a base station in auto-management\n";
+    std::cout << "                           (auto-management is opt-in; nothing is managed\n";
+    std::cout << "                           until you mark stations or run --manage-all)\n";
+    std::cout << "  --unmanage <id>          Exclude a base station from auto-management\n";
+    std::cout << "  --manage-all             Manage every discovered station automatically\n";
+    std::cout << "  --register-manifest      Register with SteamVR and enable auto-launch\n";
+    std::cout << "  --disable-autolaunch     Disable SteamVR auto-launch\n";
     std::cout << "  --check-registration     Check if application is registered with SteamVR\n";
     std::cout << "  --help, -h               Display this help message\n";
     std::cout << "\nExamples:\n";
     std::cout << "  " << programName << " --list\n";
-    std::cout << "  " << programName << " --scan\n";
     std::cout << "  " << programName << " --wake 699A51BC\n";
     std::cout << "  " << programName << " --sleep D4:1D:FE:B1:FE:E8\n";
-    std::cout << "  " << programName << " --auto\n";
+    std::cout << "  " << programName << " --unmanage LHB-699A51BC\n";
     std::cout << "\nNote: Base station ID can be:\n";
     std::cout << "  - 8-character ID (e.g., 699A51BC)\n";
     std::cout << "  - MAC address (e.g., D4:1D:FE:B1:FE:E8)\n";
     std::cout << "  - Partial name match\n";
+    std::cout << "\nConfig file: " << Config::DefaultPath() << "\n";
 }
 
 void ListBaseStations()
@@ -55,23 +63,27 @@ void ListBaseStations()
         std::cerr << "Make sure Bluetooth is enabled and working\n";
         return;
     }
-    
+
+    Config config;
+    config.Load();
+
     auto stations = detector.ScanForBaseStations(15);
-    
+
     if (stations.empty())
     {
         std::cout << "No base stations found\n";
         return;
     }
-    
+
     std::cout << "Found " << stations.size() << " base station(s):\n";
     for (size_t i = 0; i < stations.size(); ++i)
     {
         const auto& station = stations[i];
-           std::cout << "[" << i << "] " << station.name << "\n";
-           std::cout << "     ID: " << station.id << "\n";
-           std::cout << "     Address: " << station.address << "\n";
-           std::cout << "     Type: " << (station.isBaseStation1 ? "1.0" : "2.0") << "\n";
+        std::cout << "[" << i << "] " << station.name << "\n";
+        std::cout << "     ID: " << station.id << "\n";
+        std::cout << "     Address: " << station.address << "\n";
+        std::cout << "     Type: " << (station.isBaseStation1 ? "1.0" : "2.0") << "\n";
+        std::cout << "     Auto-managed: " << (config.IsManaged(station) ? "yes" : "no") << "\n";
     }
 }
 
@@ -83,48 +95,48 @@ void ControlBaseStation(const std::string& stationId, BaseStationCommand command
         std::cerr << "Failed to initialize Bluetooth\n";
         return;
     }
-    
+
     auto stations = detector.ScanForBaseStations(10);
-    
+
     if (stations.empty())
     {
         std::cerr << "No base stations found. Cannot control.\n";
         return;
     }
-    
+
     BaseStationInfo* targetStation = nullptr;
     for (auto& station : stations)
     {
-        if (station.id == stationId || station.address == stationId || 
+        if (station.id == stationId || station.address == stationId ||
             station.serial == stationId || station.name.find(stationId) != std::string::npos)
         {
             targetStation = &station;
             break;
         }
     }
-    
+
     if (!targetStation)
     {
         std::cerr << "Base station not found: " << stationId << "\n";
         std::cerr << "\nAvailable base stations:\n";
         for (size_t i = 0; i < stations.size(); ++i)
         {
-            std::cerr << "  [" << i << "] " << stations[i].name 
+            std::cerr << "  [" << i << "] " << stations[i].name
                       << " (ID: " << stations[i].id << ")\n";
         }
         return;
     }
-    
+
     BaseStationController controller;
     if (!controller.Connect(*targetStation))
     {
         std::cerr << "Failed to connect to base station\n";
         return;
     }
-    
+
     bool success = false;
     const char* commandName = "";
-    
+
     switch (command)
     {
         case BaseStationCommand::Wake:
@@ -140,7 +152,7 @@ void ControlBaseStation(const std::string& stationId, BaseStationCommand command
             commandName = "Standby";
             break;
     }
-    
+
     if (success)
     {
         std::cout << "✓ " << commandName << " command sent\n";
@@ -149,367 +161,306 @@ void ControlBaseStation(const std::string& stationId, BaseStationCommand command
     {
         std::cerr << "✗ Failed to send " << commandName << " command\n";
     }
-    
+
     controller.Disconnect();
 }
 
-void AutoManage()
+void ListManagedConfig()
 {
-    RegisterManifest();
-    
-    BaseStationDetector detector;
-    if (!detector.Initialize())
+    Config config;
+    bool loaded = config.Load();
+
+    std::cout << "Config file: " << Config::DefaultPath()
+              << (loaded ? "" : " (not created yet - defaults shown)") << "\n";
+    std::cout << "Mode: "
+              << (config.manageMode == Config::ManageMode::All
+                      ? "all (every discovered station is auto-managed unless excluded)"
+                      : "selected (only stations marked managed are auto-managed)")
+              << "\n";
+
+    if (config.stations.empty())
     {
-        std::cerr << "Failed to initialize Bluetooth\n";
+        std::cout << "No per-station entries.\n";
         return;
     }
-    
-    SteamVRMonitor monitor;
-    if (!monitor.Initialize())
+
+    std::cout << "Stations:\n";
+    for (const auto& [address, entry] : config.stations)
     {
-        std::cerr << "Failed to initialize SteamVR monitor\n";
-        return;
+        std::cout << "  " << address;
+        if (!entry.name.empty())
+        {
+            std::cout << " (" << entry.name << ")";
+        }
+        std::cout << " - " << (entry.managed ? "managed" : "excluded") << "\n";
     }
-    
-    std::vector<BaseStationInfo> managedStations;
-    std::vector<std::unique_ptr<BaseStationController>> controllers;
-    
-    auto WakeAllStations = [&]() {
-        const int maxRetries = 5;
-        const int scanTimeout = 20;
-        std::set<std::string> alreadyWoken;
-        std::set<std::string> allFoundStations;
-        
-        for (int retry = 0; retry < maxRetries; retry++)
-        {
-            if (retry > 0)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-            }
-            
-            auto stations = detector.ScanForBaseStations(scanTimeout);
-            
-            for (const auto& station : stations)
-            {
-                allFoundStations.insert(station.address);
-            }
-            
-            if (stations.empty())
-            {
-                continue;
-            }
-            
-            bool anyNewSuccess = false;
-            for (const auto& station : stations)
-            {
-                if (alreadyWoken.find(station.address) != alreadyWoken.end())
-                {
-                    continue;
-                }
-                
-                auto controller = std::make_unique<BaseStationController>();
-                if (controller->Connect(station))
-                {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                    if (controller->Wake())
-                    {
-                        controllers.push_back(std::move(controller));
-                        managedStations.push_back(station);
-                        alreadyWoken.insert(station.address);
-                        anyNewSuccess = true;
-                    }
-                    else
-                    {
-                        controller->Disconnect();
-                    }
-                }
-                
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-            }
-            
-            if (retry >= maxRetries - 1 || (allFoundStations.size() > 0 && alreadyWoken.size() >= allFoundStations.size()))
-            {
-                break;
-            }
-        }
-    };
-    
-    auto SleepAllStations = [&]() {
-        const int maxRetries = 3;
-        
-        for (int retry = 0; retry < maxRetries; retry++)
-        {
-            if (controllers.empty())
-            {
-                break;
-            }
-            
-            bool allSucceeded = true;
-            std::vector<std::unique_ptr<BaseStationController>> failedControllers;
-            std::vector<BaseStationInfo> failedStations;
-            
-            for (size_t i = 0; i < controllers.size(); i++)
-            {
-                if (controllers[i]->Sleep())
-                {
-                    controllers[i]->Disconnect();
-                }
-                else
-                {
-                    allSucceeded = false;
-                    failedControllers.push_back(std::move(controllers[i]));
-                    failedStations.push_back(managedStations[i]);
-                }
-                
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-            }
-            
-            if (allSucceeded)
-            {
-                controllers.clear();
-                managedStations.clear();
-                break;
-            }
-            
-            controllers = std::move(failedControllers);
-            managedStations = std::move(failedStations);
-            
-            if (retry < maxRetries - 1)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-            }
-            else
-            {
-                for (auto& controller : controllers)
-                {
-                    controller->Disconnect();
-                }
-                controllers.clear();
-                managedStations.clear();
-            }
-        }
-    };
-    
-    bool lastSteamVRState = false;
-    bool stationsWoken = false;
-    
-    monitor.SetStateChangeCallback([&](bool isRunning) {
-        if (isRunning == lastSteamVRState)
-            return;
-        
-        if (isRunning)
-        {
-            if (!stationsWoken)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-                WakeAllStations();
-                stationsWoken = true;
-            }
-            lastSteamVRState = true;
-        }
-        else
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-            if (!monitor.IsSteamVRRunning())
-            {
-                SleepAllStations();
-                stationsWoken = false;
-            }
-            lastSteamVRState = false;
-        }
-    });
-    
-    std::chrono::steady_clock::time_point lastPeriodicWake = std::chrono::steady_clock::now();
-    
-    if (monitor.IsSteamVRRunning())
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-        WakeAllStations();
-        lastSteamVRState = true;
-        stationsWoken = true;
-        lastPeriodicWake = std::chrono::steady_clock::now();
-    }
-    
-    signal(SIGINT, signalHandler);
-    signal(SIGTERM, signalHandler);
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    monitor.StartMonitoring();
-    
-    while (running)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        
-        if (stationsWoken)
-        {
-            bool steamVRRunning = monitor.IsSteamVRRunning();
-            
-            if (steamVRRunning)
-            {
-                auto now = std::chrono::steady_clock::now();
-                auto timeSinceLastPeriodicWake = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastPeriodicWake).count();
-                
-                if (timeSinceLastPeriodicWake >= 5000)
-                {
-                    for (auto& controller : controllers)
-                    {
-                        if (controller && controller->IsConnected())
-                        {
-                            controller->SendWakePacket();
-                        }
-                    }
-                    lastPeriodicWake = now;
-                }
-            }
-        }
-    }
-    
-    SleepAllStations();
-    monitor.StopMonitoring();
-    monitor.Shutdown();
 }
 
-bool IsLaunchedBySteamVR()
+int SetManagedFlag(const std::string& idOrAddress, bool managed)
 {
-    vr::EVRInitError initError = vr::VRInitError_None;
-    vr::IVRSystem* vrSystem = vr::VR_Init(&initError, vr::VRApplication_Background);
-    
-    if (initError == vr::VRInitError_None && vrSystem)
-    {
-        vr::VR_Shutdown();
-        return true;
-    }
-    
-    return false;
-}
+    Config config;
+    config.Load();
 
-void RegisterManifest(bool verbose)
-{
-    vr::EVRInitError initError = vr::VRInitError_None;
-    vr::IVRSystem* vrSystem = vr::VR_Init(&initError, vr::VRApplication_Utility);
-    
-    if (initError != vr::VRInitError_None)
+    std::string address;
+    std::string name;
+
+    // Resolve against existing config entries first (no scan needed).
+    if (config.stations.count(idOrAddress))
     {
-        if (verbose)
-        {
-            std::cerr << "Failed to initialize OpenVR: " << vr::VR_GetVRInitErrorAsEnglishDescription(initError) << "\n";
-        }
-        return;
-    }
-    
-    if (!vrSystem)
-    {
-        if (verbose)
-        {
-            std::cerr << "Failed to initialize VR system\n";
-        }
-        return;
-    }
-    
-    vr::IVRApplications* vrApplications = vr::VRApplications();
-    if (!vrApplications)
-    {
-        if (verbose)
-        {
-            std::cerr << "Failed to get VRApplications interface\n";
-        }
-        vr::VR_Shutdown();
-        return;
-    }
-    
-    const char* appKey = "lighthouse-manager-linux";
-    bool alreadyInstalled = vrApplications->IsApplicationInstalled(appKey);
-    
-    if (alreadyInstalled)
-    {
-        if (verbose)
-        {
-            std::cout << "Manifest already registered\n";
-        }
+        address = idOrAddress;
+        name = config.stations[idOrAddress].name;
     }
     else
     {
-        char exePath[PATH_MAX];
-        ssize_t count = readlink("/proc/self/exe", exePath, PATH_MAX);
-        if (count == -1)
+        for (const auto& [addr, entry] : config.stations)
         {
-            if (verbose)
+            if (!entry.name.empty() && entry.name.find(idOrAddress) != std::string::npos)
             {
-                std::cerr << "Failed to determine executable path\n";
+                address = addr;
+                name = entry.name;
+                break;
             }
-            vr::VR_Shutdown();
-            return;
         }
-        
-        exePath[count] = '\0';
-        std::string exeDir = std::string(exePath);
-        size_t lastSlash = exeDir.find_last_of('/');
-        if (lastSlash != std::string::npos)
+    }
+
+    // Fall back to a scan.
+    if (address.empty())
+    {
+        std::cout << "Station not in config - scanning...\n";
+        BaseStationDetector detector;
+        if (!detector.Initialize())
         {
-            exeDir = exeDir.substr(0, lastSlash);
+            std::cerr << "Failed to initialize Bluetooth\n";
+            return 1;
         }
-        
-        std::string manifestPath = exeDir + "/manifest.vrmanifest";
-        
-        if (verbose)
+        auto stations = detector.ScanForBaseStations(10);
+        for (const auto& station : stations)
         {
-            std::cout << "Registering manifest: " << manifestPath << "\n";
-        }
-        
-        vr::EVRApplicationError appError = vrApplications->AddApplicationManifest(manifestPath.c_str());
-        if (appError != vr::VRApplicationError_None)
-        {
-            if (verbose)
+            if (station.id == idOrAddress || station.address == idOrAddress ||
+                station.serial == idOrAddress ||
+                station.name.find(idOrAddress) != std::string::npos)
             {
-                std::cerr << "Failed to add manifest: " << vrApplications->GetApplicationsErrorNameFromEnum(appError) << "\n";
-                std::cerr << "Manifest path: " << manifestPath << "\n";
-                std::cerr << "App key: " << appKey << "\n";
+                address = station.address;
+                name = station.name;
+                break;
             }
-            vr::VR_Shutdown();
-            return;
         }
-        
-        if (verbose)
+        if (address.empty())
         {
-            std::cout << "Manifest registered successfully\n";
+            std::cerr << "Base station not found: " << idOrAddress << "\n";
+            if (!stations.empty())
+            {
+                std::cerr << "Available:\n";
+                for (const auto& station : stations)
+                {
+                    std::cerr << "  " << station.name << " (" << station.address << ")\n";
+                }
+            }
+            return 1;
         }
     }
-    
-    vr::EVRApplicationError autoLaunchError = vrApplications->SetApplicationAutoLaunch(appKey, true);
-    if (autoLaunchError != vr::VRApplicationError_None)
+
+    config.SetManaged(address, name, managed);
+    if (!config.Save())
     {
-        if (verbose)
+        std::cerr << "Failed to write " << Config::DefaultPath() << "\n";
+        return 1;
+    }
+
+    std::cout << (name.empty() ? address : name) << " is now "
+              << (managed ? "auto-managed" : "excluded from auto-management") << "\n";
+    std::cout << "A running auto service picks this up within ~15 seconds.\n";
+    return 0;
+}
+
+int ManageAll()
+{
+    Config config;
+    config.Load();
+    config.manageMode = Config::ManageMode::All;
+    for (auto& [address, entry] : config.stations)
+    {
+        entry.managed = true;
+    }
+    if (!config.Save())
+    {
+        std::cerr << "Failed to write " << Config::DefaultPath() << "\n";
+        return 1;
+    }
+    std::cout << "All discovered base stations will be auto-managed.\n";
+    return 0;
+}
+
+// Headless SteamVR-session service. Single-threaded OpenVR ownership: the
+// context is initialized once here and never touched from another thread.
+int AutoManage()
+{
+    std::signal(SIGINT, signalHandler);
+    std::signal(SIGTERM, signalHandler);
+
+    // When launched by SteamVR the server is already up; when started
+    // manually, wait for it.
+    std::unique_ptr<vrreg::ScopedVRSession> session;
+    bool announcedWait = false;
+    while (!g_signal)
+    {
+        session = std::make_unique<vrreg::ScopedVRSession>(vr::VRApplication_Background);
+        if (session->Valid())
         {
-            std::cerr << "Warning: Failed to enable auto-launch: " << vrApplications->GetApplicationsErrorNameFromEnum(autoLaunchError) << "\n";
+            break;
         }
+        session.reset();
+        if (!announcedWait)
+        {
+            std::cout << "[auto] Waiting for SteamVR to start...\n";
+            announcedWait = true;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(2));
     }
-    else if (verbose)
+    if (g_signal || !session)
     {
-        std::cout << "Auto-launch enabled\n";
-        std::cout << "App key: " << appKey << "\n";
+        return 0;
     }
-    
-    vr::VR_Shutdown();
+    std::cout << "[auto] Connected to SteamVR\n";
+
+    // Keep the registration fresh (heals stale install paths); deliberately
+    // does NOT touch the auto-launch flag - that stays the user's choice.
+    vrreg::RegisterManifestWithSession(session->System(), false, false);
+
+    Config config;
+    config.Load();
+
+    BaseStationDetector detector;
+    if (!detector.Initialize())
+    {
+        std::cerr << "[auto] Failed to initialize Bluetooth - exiting\n";
+        return 1;
+    }
+
+    AutoManager manager(detector, config);
+    CancellationToken token;
+    SteamVRWatcher watcher(session->System());
+
+    manager.WakeManaged(token);
+    std::cout << "[auto] Managing " << manager.ManagedCount() << " base station(s)\n";
+    if (manager.ManagedCount() == 0)
+    {
+        std::cout << "[auto] Auto-management is opt-in: mark stations with\n"
+                     "[auto]   lighthouse-manager --manage <id>\n"
+                     "[auto] or the GUI's Auto checkboxes.\n";
+    }
+
+    enum class ExitReason
+    {
+        Signal,
+        QuitRequested,
+        ProcessDead
+    };
+    ExitReason reason = ExitReason::Signal;
+
+    auto lastKeepAlive = std::chrono::steady_clock::now();
+    auto lastConfigCheck = lastKeepAlive;
+    auto configMtime = Config::FileMtime();
+
+    bool running = true;
+    while (running)
+    {
+        if (g_signal)
+        {
+            reason = ExitReason::Signal;
+            break;
+        }
+
+        switch (watcher.Poll())
+        {
+            case SteamVRWatcher::Status::QuitRequested:
+                reason = ExitReason::QuitRequested;
+                running = false;
+                continue;
+            case SteamVRWatcher::Status::ProcessDead:
+                reason = ExitReason::ProcessDead;
+                running = false;
+                continue;
+            case SteamVRWatcher::Status::Running:
+                break;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+
+        if (now - lastKeepAlive >= std::chrono::seconds(5))
+        {
+            manager.KeepAlive();
+            lastKeepAlive = now;
+        }
+
+        if (now - lastConfigCheck >= std::chrono::seconds(15))
+        {
+            lastConfigCheck = now;
+            auto mtime = Config::FileMtime();
+            if (mtime != configMtime)
+            {
+                configMtime = mtime;
+                std::cout << "[auto] Config changed - reloading\n";
+                Config fresh;
+                fresh.Load();
+                manager.UpdateConfig(fresh, token);
+                config = fresh;
+
+                bool needWake = false;
+                for (const auto& [address, entry] : config.stations)
+                {
+                    if (entry.managed && !manager.IsManaging(address))
+                    {
+                        needWake = true;
+                        break;
+                    }
+                }
+                if (needWake)
+                {
+                    manager.WakeManaged(token);
+                }
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+
+    switch (reason)
+    {
+        case ExitReason::QuitRequested:
+            std::cout << "[auto] SteamVR is shutting down\n";
+            // Tell SteamVR we heard it so it does not kill us mid-cleanup.
+            if (session->System())
+            {
+                session->System()->AcknowledgeQuit_Exiting();
+            }
+            break;
+        case ExitReason::ProcessDead:
+            std::cout << "[auto] SteamVR process died\n";
+            break;
+        case ExitReason::Signal:
+            std::cout << "[auto] Received termination signal\n";
+            break;
+    }
+
+    // Release the OpenVR IPC before the (bounded) BLE cleanup.
+    session->Shutdown();
+    token.Cancel();
+    manager.SleepManagedFast(std::chrono::milliseconds(4000));
+    std::cout << "[auto] Done\n";
+    return 0;
 }
 
 int main(int argc, char* argv[])
 {
     if (argc < 2)
     {
-        if (IsLaunchedBySteamVR())
-        {
-            RegisterManifest(false);
-            AutoManage();
-            return 0;
-        }
-        
-        RegisterManifest(false);
         PrintUsage(argv[0]);
         return 1;
     }
-    
+
     std::string command = argv[1];
-    
+
     if (command == "--help" || command == "-h")
     {
         PrintUsage(argv[0]);
@@ -551,50 +502,60 @@ int main(int argc, char* argv[])
     }
     else if (command == "--auto")
     {
-        AutoManage();
+        return AutoManage();
+    }
+    else if (command == "--list-managed")
+    {
+        ListManagedConfig();
+    }
+    else if (command == "--manage")
+    {
+        if (argc < 3)
+        {
+            std::cerr << "Error: Base station ID required\n";
+            return 1;
+        }
+        return SetManagedFlag(argv[2], true);
+    }
+    else if (command == "--unmanage")
+    {
+        if (argc < 3)
+        {
+            std::cerr << "Error: Base station ID required\n";
+            return 1;
+        }
+        return SetManagedFlag(argv[2], false);
+    }
+    else if (command == "--manage-all")
+    {
+        return ManageAll();
     }
     else if (command == "--register-manifest")
     {
-        RegisterManifest(true);
+        return vrreg::RegisterManifest(true, true) ? 0 : 1;
+    }
+    else if (command == "--disable-autolaunch")
+    {
+        return vrreg::DisableAutoLaunch(true) ? 0 : 1;
     }
     else if (command == "--check-registration")
     {
-        vr::EVRInitError initError = vr::VRInitError_None;
-        vr::IVRSystem* vrSystem = vr::VR_Init(&initError, vr::VRApplication_Utility);
-        
-        if (initError != vr::VRInitError_None)
+        vrreg::Status status = vrreg::CheckRegistration();
+        if (!status.steamvrAvailable)
         {
-            std::cerr << "Failed to initialize OpenVR: " << vr::VR_GetVRInitErrorAsEnglishDescription(initError) << "\n";
-            std::cerr << "Make sure SteamVR is running\n";
+            std::cerr << "Failed to initialize OpenVR - make sure SteamVR is running\n";
             return 1;
         }
-        
-        vr::IVRApplications* vrApplications = vr::VRApplications();
-        if (!vrApplications)
-        {
-            std::cerr << "Failed to get VRApplications interface\n";
-            vr::VR_Shutdown();
-            return 1;
-        }
-        
-        const char* appKey = "lighthouse-manager-linux";
-        bool isInstalled = vrApplications->IsApplicationInstalled(appKey);
-        
+
         std::cout << "Registration Status:\n";
-        std::cout << "  App Key: " << appKey << "\n";
-        std::cout << "  Registered: " << (isInstalled ? "Yes" : "No") << "\n";
-        
-        if (isInstalled)
+        std::cout << "  App Key: " << vrreg::APP_KEY << "\n";
+        std::cout << "  Registered: " << (status.registered ? "Yes" : "No") << "\n";
+        if (status.registered)
         {
-            bool autoLaunch = vrApplications->GetApplicationAutoLaunch(appKey);
-            std::cout << "  Auto-launch: " << (autoLaunch ? "Enabled" : "Disabled") << "\n";
-            
-            char workingDir[1024];
-            vr::EVRApplicationError error;
-            uint32_t size = vrApplications->GetApplicationPropertyString(appKey, vr::VRApplicationProperty_WorkingDirectory_String, workingDir, sizeof(workingDir), &error);
-            if (error == vr::VRApplicationError_None && size > 0)
+            std::cout << "  Auto-launch: " << (status.autoLaunch ? "Enabled" : "Disabled") << "\n";
+            if (!status.workingDirectory.empty())
             {
-                std::cout << "  Working Directory: " << workingDir << "\n";
+                std::cout << "  Working Directory: " << status.workingDirectory << "\n";
             }
         }
         else
@@ -602,14 +563,7 @@ int main(int argc, char* argv[])
             std::cout << "\nTo register, run:\n";
             std::cout << "  lighthouse-manager --register-manifest\n";
         }
-        
-        vr::VR_Shutdown();
-        return isInstalled ? 0 : 1;
-    }
-    else if (command == "--gui")
-    {
-        std::cout << "GUI mode not yet implemented. Use CLI mode for now.\n";
-        return 1;
+        return status.registered ? 0 : 1;
     }
     else
     {
@@ -617,7 +571,6 @@ int main(int argc, char* argv[])
         PrintUsage(argv[0]);
         return 1;
     }
-    
+
     return 0;
 }
-

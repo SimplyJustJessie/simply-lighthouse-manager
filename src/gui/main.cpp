@@ -1,85 +1,188 @@
+// Lighthouse Manager GUI - manual base station control and auto-manage
+// configuration. Holds NO persistent OpenVR context; the SteamVR-session
+// lifecycle lives in the headless CLI service (`lighthouse-manager --auto`).
+// All Bluetooth/OpenVR work runs on a single joinable worker thread; shared
+// state is only touched under GuiState::m or via atomics.
+
 #define GL_SILENCE_DEPRECATION
-#include <GLFW/glfw3.h>
 #include <GL/gl.h>
-#include "imgui.h"
+#include <GLFW/glfw3.h>
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <iostream>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_opengl3.h"
-#include "../core/BaseStationDetector.h"
+#include "imgui.h"
+
 #include "../core/BaseStationController.h"
-#include "../core/SteamVRMonitor.h"
-#include <openvr.h>
-#include <iostream>
-#include <vector>
-#include <thread>
-#include <chrono>
-#include <mutex>
-#include <future>
-#include <map>
-#include <set>
-#include <cstdlib>
-#include <cstring>
-#include <unistd.h>
-#include <limits.h>
-#include <csignal>
-#include <atomic>
+#include "../core/BaseStationDetector.h"
+#include "../core/Config.h"
+#include "../core/SteamVRWatcher.h"
+#include "../core/VRRegistration.h"
 
-static GLFWwindow* glfwWindow = nullptr;
-static std::vector<BaseStationInfo> detectedStations;
-static std::mutex stationsMutex;
-static bool isScanning = false;
-static std::string statusMessage = "Ready";
-static bool statusError = false;
-
-static std::atomic<bool> running(true);
-static std::unique_ptr<SteamVRMonitor> steamVRMonitor;
-static std::thread autoManageThread;
-static std::vector<std::unique_ptr<BaseStationController>> managedControllers;
-static std::mutex controllersMutex;
-
-void ScanForStations()
+namespace
 {
-    if (isScanning) return;
-    
-    isScanning = true;
-    statusMessage = "Scanning for base stations...";
-    statusError = false;
-    
-    std::thread scanThread([]() {
-        BaseStationDetector detector;
-        if (!detector.Initialize())
+
+struct GuiState
+{
+    std::mutex m;
+    // guarded by m:
+    std::string statusMessage = "Ready";
+    bool statusError = false;
+    std::vector<BaseStationInfo> stations;
+    vrreg::Status regStatus;
+    bool regStatusKnown = false;
+
+    // UI-thread only:
+    Config config;
+    bool configDirty = false;
+
+    // atomics:
+    std::atomic<bool> scanning{false};
+    std::atomic<bool> steamvrRunning{false};
+    std::atomic<bool> quitting{false};
+
+    void SetStatus(const std::string& message, bool isError)
+    {
+        std::lock_guard<std::mutex> lock(m);
+        statusMessage = message;
+        statusError = isError;
+    }
+};
+
+// One worker thread executing queued jobs in order. Exceptions become status
+// messages instead of std::terminate. The destructor drops queued-but-unrun
+// jobs and joins, so no work outlives main().
+class WorkerQueue
+{
+public:
+    explicit WorkerQueue(GuiState& state) : state(state), worker([this] { Run(); }) {}
+
+    ~WorkerQueue()
+    {
         {
-            std::lock_guard<std::mutex> lock(stationsMutex);
-            statusMessage = "Failed to initialize Bluetooth";
-            statusError = true;
-            isScanning = false;
-            return;
+            std::lock_guard<std::mutex> lock(m);
+            stop = true;
+            jobs.clear();
         }
-        
-        auto stations = detector.ScanForBaseStations(10);
-        
+        cv.notify_all();
+        worker.join();
+    }
+
+    void Post(std::function<void()> job)
+    {
         {
-            std::lock_guard<std::mutex> lock(stationsMutex);
-            detectedStations = stations;
-            if (stations.empty())
+            std::lock_guard<std::mutex> lock(m);
+            if (stop)
             {
-                statusMessage = "No base stations found";
-                statusError = true;
+                return;
             }
-            else
-            {
-                statusMessage = "Found " + std::to_string(stations.size()) + " base station(s)";
-                statusError = false;
-            }
-            isScanning = false;
+            jobs.push_back(std::move(job));
+            ++pendingCount;
         }
-    });
-    
-    scanThread.detach();
+        cv.notify_one();
+    }
+
+    bool Busy() const { return pendingCount.load() > 0; }
+
+private:
+    void Run()
+    {
+        for (;;)
+        {
+            std::function<void()> job;
+            {
+                std::unique_lock<std::mutex> lock(m);
+                cv.wait(lock, [this] { return stop || !jobs.empty(); });
+                if (stop)
+                {
+                    return;
+                }
+                job = std::move(jobs.front());
+                jobs.pop_front();
+            }
+
+            try
+            {
+                job();
+            }
+            catch (const std::exception& e)
+            {
+                state.SetStatus(std::string("Internal error: ") + e.what(), true);
+            }
+            catch (...)
+            {
+                state.SetStatus("Internal error in background task", true);
+            }
+            --pendingCount;
+        }
+    }
+
+    GuiState& state;
+    std::mutex m;
+    std::condition_variable cv;
+    std::deque<std::function<void()>> jobs;
+    bool stop = false;
+    std::atomic<int> pendingCount{0};
+    std::thread worker;
+};
+
+GLFWwindow* glfwWindow = nullptr;
+
+void PostScan(GuiState& state, WorkerQueue& worker)
+{
+    if (state.scanning)
+    {
+        return;
+    }
+    state.scanning = true;
+    state.SetStatus("Scanning for base stations...", false);
+
+    worker.Post(
+        [&state]()
+        {
+            BaseStationDetector detector;
+            if (!detector.Initialize())
+            {
+                state.SetStatus("Failed to initialize Bluetooth", true);
+                state.scanning = false;
+                return;
+            }
+
+            auto stations = detector.ScanForBaseStations(
+                10, [&state] { return state.quitting.load(); });
+
+            {
+                std::lock_guard<std::mutex> lock(state.m);
+                state.stations = stations;
+                if (stations.empty())
+                {
+                    state.statusMessage = "No base stations found";
+                    state.statusError = true;
+                }
+                else
+                {
+                    state.statusMessage =
+                        "Found " + std::to_string(stations.size()) + " base station(s)";
+                    state.statusError = false;
+                }
+            }
+            state.scanning = false;
+        });
 }
 
-void ControlStation(const BaseStationInfo& station, BaseStationCommand command)
+void PostControl(GuiState& state, WorkerQueue& worker, const BaseStationInfo& station,
+                 BaseStationCommand command)
 {
-    // Return immediately - don't block the GUI thread
     std::string commandName;
     switch (command)
     {
@@ -93,88 +196,142 @@ void ControlStation(const BaseStationInfo& station, BaseStationCommand command)
             commandName = "Standby";
             break;
     }
-    
-    // Quick status update without blocking
-    {
-        std::lock_guard<std::mutex> lock(stationsMutex);
-        statusMessage = "Sending " + commandName + " to " + station.name + "...";
-        statusError = false;
-    }
-    
-    // Launch control in background thread - detach immediately
-    std::thread([station, command, commandName]() {
-        BaseStationController controller;
-        
+
+    state.SetStatus("Queued " + commandName + " for " + station.name, false);
+
+    worker.Post(
+        [&state, station, command, commandName]()
         {
-            std::lock_guard<std::mutex> lock(stationsMutex);
-            statusMessage = "Connecting to " + station.name + "...";
-        }
-        
-        if (!controller.Connect(station))
-        {
-            std::lock_guard<std::mutex> lock(stationsMutex);
-            statusMessage = "Failed to connect to " + station.name;
-            statusError = true;
-            return;
-        }
-        
-        {
-            std::lock_guard<std::mutex> lock(stationsMutex);
-            statusMessage = "Sending " + commandName + " command...";
-        }
-        
-        bool success = false;
-        switch (command)
-        {
-            case BaseStationCommand::Wake:
-                success = controller.Wake();
-                break;
-            case BaseStationCommand::Sleep:
-                success = controller.Sleep();
-                break;
-            case BaseStationCommand::Standby:
-                success = controller.Standby();
-                break;
-        }
-        
-        controller.Disconnect();
-        
-        {
-            std::lock_guard<std::mutex> lock(stationsMutex);
+            state.SetStatus("Connecting to " + station.name + "...", false);
+
+            BaseStationController controller;
+            if (!controller.Connect(station))
+            {
+                state.SetStatus("Failed to connect to " + station.name, true);
+                return;
+            }
+
+            state.SetStatus("Sending " + commandName + " to " + station.name + "...", false);
+
+            bool success = false;
+            switch (command)
+            {
+                case BaseStationCommand::Wake:
+                    success = controller.Wake();
+                    break;
+                case BaseStationCommand::Sleep:
+                    success = controller.Sleep();
+                    break;
+                case BaseStationCommand::Standby:
+                    success = controller.Standby();
+                    break;
+            }
+
+            controller.Disconnect();
+
             if (success)
             {
-                statusMessage = "✓ " + commandName + " command sent successfully to " + station.name;
-                statusError = false;
+                state.SetStatus("✓ " + commandName + " sent to " + station.name, false);
             }
             else
             {
-                statusMessage = "✗ Failed to send " + commandName + " command to " + station.name;
-                statusError = true;
+                state.SetStatus("✗ Failed to send " + commandName + " to " + station.name, true);
             }
-        }
-        
-    }).detach(); // Detach immediately - don't wait
+        });
 }
 
-void BuildUI()
+void PostRegistrationCheck(GuiState& state, WorkerQueue& worker)
+{
+    worker.Post(
+        [&state]()
+        {
+            if (!SteamVRWatcher::IsVrServerProcessRunning())
+            {
+                return;
+            }
+            vrreg::Status status = vrreg::CheckRegistration();
+            std::lock_guard<std::mutex> lock(state.m);
+            state.regStatus = status;
+            state.regStatusKnown = true;
+        });
+}
+
+void PostRegister(GuiState& state, WorkerQueue& worker, bool enable)
+{
+    worker.Post(
+        [&state, enable]()
+        {
+            bool ok = enable ? vrreg::RegisterManifest(true, false)
+                             : vrreg::DisableAutoLaunch(false);
+            if (ok)
+            {
+                state.SetStatus(enable ? "Auto-start with SteamVR enabled"
+                                       : "Auto-start with SteamVR disabled",
+                                false);
+            }
+            else
+            {
+                state.SetStatus("SteamVR registration change failed - is SteamVR running?", true);
+            }
+
+            vrreg::Status status = vrreg::CheckRegistration();
+            std::lock_guard<std::mutex> lock(state.m);
+            state.regStatus = status;
+            state.regStatusKnown = true;
+        });
+}
+
+void SaveConfig(GuiState& state)
+{
+    if (state.config.Save())
+    {
+        state.configDirty = false;
+        state.SetStatus("Configuration saved - the auto service applies it within ~15s", false);
+    }
+    else
+    {
+        state.SetStatus("Failed to save " + Config::DefaultPath(), true);
+    }
+}
+
+void BuildUI(GuiState& state, WorkerQueue& worker)
 {
     int windowWidth, windowHeight;
     glfwGetWindowSize(glfwWindow, &windowWidth, &windowHeight);
-    
+
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(ImVec2((float)windowWidth, (float)windowHeight));
-    
-    ImGui::Begin("Lighthouse Manager", nullptr, 
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | 
-                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_MenuBar);
-    
+
+    ImGui::Begin("Lighthouse Manager", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_MenuBar);
+
+    const bool busy = worker.Busy();
+    const bool scanning = state.scanning.load();
+    const bool steamvrUp = state.steamvrRunning.load();
+
+    // Locked copies for this frame.
+    std::string statusMessage;
+    bool statusError;
+    std::vector<BaseStationInfo> stations;
+    vrreg::Status regStatus;
+    bool regStatusKnown;
+    {
+        std::lock_guard<std::mutex> lock(state.m);
+        statusMessage = state.statusMessage;
+        statusError = state.statusError;
+        stations = state.stations;
+        regStatus = state.regStatus;
+        regStatusKnown = state.regStatusKnown;
+    }
+
     if (ImGui::BeginMenuBar())
     {
         if (ImGui::BeginMenu("File"))
         {
-            if (ImGui::MenuItem("Scan for Base Stations", nullptr, false, !isScanning))
+            if (ImGui::MenuItem("Scan for Base Stations", nullptr, false, !scanning))
             {
-                ScanForStations();
+                PostScan(state, worker);
             }
             if (ImGui::MenuItem("Exit", "Esc"))
             {
@@ -184,135 +341,192 @@ void BuildUI()
         }
         ImGui::EndMenuBar();
     }
-    
+
     ImGui::Spacing();
     ImGui::Text("Lighthouse Manager - Linux Edition");
-    ImGui::Separator();
-    ImGui::Spacing();
-    
-    if (ImGui::Button("Scan for Base Stations", ImVec2(-1, 0)))
+    ImGui::SameLine(ImGui::GetWindowWidth() - 160);
+    if (steamvrUp)
     {
-        ScanForStations();
-    }
-    
-    ImGui::Spacing();
-    
-    if (isScanning)
-    {
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Scanning...");
+        ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "SteamVR: running");
     }
     else
     {
-        if (statusError)
-        {
-            ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "%s", statusMessage.c_str());
-        }
-        else
-        {
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%s", statusMessage.c_str());
-        }
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "SteamVR: stopped");
     }
-    
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::BeginDisabled(scanning);
+    if (ImGui::Button("Scan for Base Stations", ImVec2(-1, 0)))
+    {
+        PostScan(state, worker);
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Spacing();
+
+    if (scanning)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Scanning...");
+    }
+    else if (statusError)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", statusMessage.c_str());
+    }
+    else
+    {
+        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "%s", statusMessage.c_str());
+    }
+
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-    
-    std::vector<BaseStationInfo> stationsCopy;
-    {
-        std::lock_guard<std::mutex> lock(stationsMutex);
-        stationsCopy = detectedStations;
-    }
-    
-    if (stationsCopy.empty())
+
+    if (stations.empty())
     {
         ImGui::Text("No base stations detected.");
         ImGui::Text("Click 'Scan for Base Stations' to search.");
     }
     else
     {
-        ImGui::Text("Detected Base Stations: %zu", stationsCopy.size());
+        ImGui::Text("Detected Base Stations: %zu", stations.size());
         ImGui::Spacing();
-        
-        if (ImGui::BeginTable("Stations", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit))
+
+        if (ImGui::BeginTable("Stations", 6,
+                              ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                  ImGuiTableFlags_SizingFixedFit))
         {
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 120.0f);
-            ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-            ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-            ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, 200.0f);
+            ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+            ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+            ImGui::TableSetupColumn("Auto", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+            ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, 190.0f);
             ImGui::TableHeadersRow();
-            
-            for (size_t i = 0; i < stationsCopy.size(); ++i)
+
+            for (size_t i = 0; i < stations.size(); ++i)
             {
-                const auto& station = stationsCopy[i];
-                
+                const auto& station = stations[i];
+
                 ImGui::TableNextRow();
-                
+
                 ImGui::TableNextColumn();
                 ImGui::Text("%s", station.name.c_str());
-                
+
                 ImGui::TableNextColumn();
                 ImGui::Text("%s", station.id.c_str());
-                
+
                 ImGui::TableNextColumn();
                 ImGui::Text("%s", station.address.c_str());
-                
+
                 ImGui::TableNextColumn();
                 ImGui::Text("%s", station.isBaseStation1 ? "1.0" : "2.0");
-                
-                ImGui::TableNextColumn();
+
                 ImGui::PushID((int)i);
-                
-                static std::map<std::string, std::chrono::steady_clock::time_point> lastActionTime;
-                auto now = std::chrono::steady_clock::now();
-                bool canAct = true;
-                
-                auto it = lastActionTime.find(station.address);
-                if (it != lastActionTime.end())
+
+                ImGui::TableNextColumn();
+                bool managed = state.config.IsManaged(station);
+                if (ImGui::Checkbox("##auto", &managed))
                 {
-                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second);
-                    canAct = elapsed.count() > 1000;
+                    state.config.SetManaged(station.address, station.name, managed);
+                    state.configDirty = true;
                 }
-                
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                {
+                    ImGui::SetTooltip("Wake/sleep this station automatically\nwith SteamVR");
+                }
+
+                ImGui::TableNextColumn();
+                ImGui::BeginDisabled(busy);
                 if (ImGui::SmallButton("Wake"))
                 {
-                    if (canAct)
-                    {
-                        lastActionTime[station.address] = now;
-                        ControlStation(station, BaseStationCommand::Wake);
-                    }
+                    PostControl(state, worker, station, BaseStationCommand::Wake);
                 }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Sleep"))
                 {
-                    if (canAct)
-                    {
-                        lastActionTime[station.address] = now;
-                        ControlStation(station, BaseStationCommand::Sleep);
-                    }
+                    PostControl(state, worker, station, BaseStationCommand::Sleep);
                 }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Standby"))
                 {
-                    if (canAct)
-                    {
-                        lastActionTime[station.address] = now;
-                        ControlStation(station, BaseStationCommand::Standby);
-                    }
+                    PostControl(state, worker, station, BaseStationCommand::Standby);
                 }
-                
+                ImGui::EndDisabled();
+
                 ImGui::PopID();
             }
-            
+
             ImGui::EndTable();
         }
     }
-    
+
+    ImGui::Spacing();
     ImGui::Separator();
-    
+    ImGui::Spacing();
+
+    ImGui::Text("Auto-management");
+
+    bool manageAll = state.config.manageMode == Config::ManageMode::All;
+    if (ImGui::Checkbox("Manage newly discovered stations automatically", &manageAll))
+    {
+        state.config.manageMode = manageAll ? Config::ManageMode::All
+                                            : Config::ManageMode::Selected;
+        state.configDirty = true;
+    }
+
+    ImGui::BeginDisabled(!state.configDirty);
+    if (ImGui::Button("Save configuration"))
+    {
+        SaveConfig(state);
+    }
+    ImGui::EndDisabled();
+    if (state.configDirty)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "unsaved changes");
+    }
+
+    ImGui::Spacing();
+
+    if (regStatusKnown)
+    {
+        ImGui::Text("SteamVR auto-start: %s",
+                    !regStatus.registered ? "not registered"
+                    : regStatus.autoLaunch ? "enabled"
+                                           : "disabled");
+    }
+    else
+    {
+        ImGui::Text("SteamVR auto-start: unknown (start SteamVR to query)");
+    }
+
+    ImGui::BeginDisabled(!steamvrUp || busy);
+    if (ImGui::Button("Enable auto-start"))
+    {
+        PostRegister(state, worker, true);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Disable auto-start"))
+    {
+        PostRegister(state, worker, false);
+    }
+    ImGui::EndDisabled();
+    if (!steamvrUp)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "(requires SteamVR running)");
+    }
+
+    ImGui::Separator();
+
     float creditsHeight = ImGui::GetTextLineHeightWithSpacing();
-    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - creditsHeight - ImGui::GetStyle().WindowPadding.y);
-    
+    float creditsY = ImGui::GetWindowHeight() - creditsHeight - ImGui::GetStyle().WindowPadding.y;
+    if (creditsY > ImGui::GetCursorPosY())
+    {
+        ImGui::SetCursorPosY(creditsY);
+    }
+
     ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Based on ");
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "OVR Lighthouse Manager");
@@ -324,7 +538,11 @@ void BuildUI()
     ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), " | Linux port by ");
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "@xi-ve");
-    
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), " | fork by ");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "@simplyyjessie");
+
     ImGui::End();
 }
 
@@ -335,124 +553,36 @@ bool InitGLFW()
         std::cerr << "Failed to initialize GLFW\n";
         return false;
     }
-    
+
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    
-    // Ensure window starts small and resizable
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);
-    
-    // Set window class name for Hyprland window rules
-    // This allows Hyprland to identify and apply rules to this window
+
+    // Stable identifiers for window-manager rules. On Hyprland, users can
+    // float the window with: windowrule = float, class:lighthouse-manager
     glfwWindowHintString(GLFW_X11_CLASS_NAME, "lighthouse-manager");
     glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "lighthouse-manager");
-    
-    // Small initial window size
-    const int windowWidth = 600;
-    const int windowHeight = 400;
-    glfwWindow = glfwCreateWindow(windowWidth, windowHeight, "Lighthouse Manager", nullptr, nullptr);
+#ifdef GLFW_WAYLAND_APP_ID
+    glfwWindowHintString(GLFW_WAYLAND_APP_ID, "lighthouse-manager");
+#endif
+
+    const int windowWidth = 640;
+    const int windowHeight = 520;
+    glfwWindow = glfwCreateWindow(windowWidth, windowHeight, "Lighthouse Manager",
+                                  nullptr, nullptr);
     if (!glfwWindow)
     {
         std::cerr << "Failed to create GLFW window\n";
         glfwTerminate();
         return false;
     }
-    
+
     glfwMakeContextCurrent(glfwWindow);
     glfwSwapInterval(1);
-    
-    // Set minimum window size
-    glfwSetWindowSizeLimits(glfwWindow, 500, 350, GLFW_DONT_CARE, GLFW_DONT_CARE);
-    
-    // Center window on creation (helps on Wayland/Hyprland)
-    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
-    if (monitor)
-    {
-        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-        if (mode)
-        {
-            int x = (mode->width - windowWidth) / 2;
-            int y = (mode->height - windowHeight) / 2;
-            glfwSetWindowPos(glfwWindow, x, y);
-        }
-    }
-    
-    // Force floating window on Hyprland using hyprctl
-    // Wait a bit for the window to be registered with Hyprland
-    std::thread([windowWidth, windowHeight]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        
-        // Check if hyprctl is available (indicates Hyprland)
-        FILE* testPipe = popen("command -v hyprctl >/dev/null 2>&1 && echo yes", "r");
-        bool hyprctlAvailable = false;
-        if (testPipe) {
-            char result[16] = {0};
-            if (fgets(result, sizeof(result), testPipe) && strstr(result, "yes")) {
-                hyprctlAvailable = true;
-            }
-            pclose(testPipe);
-        }
-        
-        if (!hyprctlAvailable) {
-            return; // Not running on Hyprland
-        }
-        
-        // Try to find window by class name and set to floating
-        // Method 1: Use jq if available
-        std::string findCmd = "hyprctl clients -j 2>/dev/null | jq -r '.[] | select(.class == \"lighthouse-manager\") | .address' 2>/dev/null | head -1";
-        FILE* findPipe = popen(findCmd.c_str(), "r");
-        std::string address;
-        
-        if (findPipe) {
-            char addr[64] = {0};
-            if (fgets(addr, sizeof(addr), findPipe)) {
-                size_t len = strlen(addr);
-                if (len > 0 && addr[len-1] == '\n') {
-                    addr[len-1] = '\0';
-                }
-                if (strlen(addr) > 0) {
-                    address = addr;
-                }
-            }
-            pclose(findPipe);
-        }
-        
-        // Method 2: Fallback - parse hyprctl output without jq
-        if (address.empty()) {
-            std::string findCmd2 = "hyprctl clients 2>/dev/null | grep -A 20 'lighthouse-manager' | grep 'address:' | head -1 | awk '{print $2}'";
-            FILE* findPipe2 = popen(findCmd2.c_str(), "r");
-            if (findPipe2) {
-                char addr[64] = {0};
-                if (fgets(addr, sizeof(addr), findPipe2)) {
-                    size_t len = strlen(addr);
-                    if (len > 0 && addr[len-1] == '\n') {
-                        addr[len-1] = '\0';
-                    }
-                    if (strlen(addr) > 0) {
-                        address = addr;
-                    }
-                }
-                pclose(findPipe2);
-            }
-        }
-        
-        if (!address.empty()) {
-            // Set window to floating
-            std::string floatCmd = "hyprctl dispatch togglefloating address:" + address + " >/dev/null 2>&1";
-            system(floatCmd.c_str());
-            
-            // Set window size
-            std::string sizeCmd = "hyprctl dispatch resizeactive exact " + 
-                                std::to_string(windowWidth) + " " + std::to_string(windowHeight) + " >/dev/null 2>&1";
-            system(sizeCmd.c_str());
-        } else {
-            // Last resort: try to float active window (if it's ours)
-            system("hyprctl dispatch togglefloating active >/dev/null 2>&1");
-        }
-    }).detach();
-    
+    glfwSetWindowSizeLimits(glfwWindow, 520, 400, GLFW_DONT_CARE, GLFW_DONT_CARE);
+
     return true;
 }
 
@@ -462,437 +592,110 @@ bool InitImGui()
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    
+
     ImGui::StyleColorsDark();
-    
+
     if (!ImGui_ImplGlfw_InitForOpenGL(glfwWindow, true))
     {
         std::cerr << "Failed to initialize ImGui GLFW\n";
         return false;
     }
-    
-    const char* glsl_version = "#version 330";
-    if (!ImGui_ImplOpenGL3_Init(glsl_version))
+
+    if (!ImGui_ImplOpenGL3_Init("#version 330"))
     {
         std::cerr << "Failed to initialize ImGui OpenGL3\n";
         return false;
     }
-    
+
     return true;
 }
 
-void Shutdown()
+void ShutdownGraphics()
 {
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
-    
+
     if (glfwWindow)
     {
         glfwDestroyWindow(glfwWindow);
+        glfwWindow = nullptr;
     }
     glfwTerminate();
 }
 
-bool IsSteamVRAvailable()
-{
-    vr::EVRInitError initError = vr::VRInitError_None;
-    vr::IVRSystem* vrSystem = vr::VR_Init(&initError, vr::VRApplication_Background);
-    
-    if (initError == vr::VRInitError_None && vrSystem)
-    {
-        vr::VR_Shutdown();
-        return true;
-    }
-    
-    return false;
-}
+}  // namespace
 
-bool IsLaunchedBySteamVR()
+int main(int, char**)
 {
-    if (!IsSteamVRAvailable())
-    {
-        return false;
-    }
-    return true;
-}
-
-void RegisterManifest()
-{
-    if (!IsSteamVRAvailable())
-    {
-        return;
-    }
-    
-    vr::EVRInitError initError = vr::VRInitError_None;
-    vr::IVRSystem* vrSystem = vr::VR_Init(&initError, vr::VRApplication_Utility);
-    
-    if (initError != vr::VRInitError_None || !vrSystem)
-    {
-        return;
-    }
-    
-    vr::IVRApplications* vrApplications = vr::VRApplications();
-    if (!vrApplications)
-    {
-        vr::VR_Shutdown();
-        return;
-    }
-    
-    const char* appKey = "lighthouse-manager-linux";
-    bool alreadyInstalled = vrApplications->IsApplicationInstalled(appKey);
-    
-    if (!alreadyInstalled)
-    {
-        char exePath[PATH_MAX];
-        ssize_t count = readlink("/proc/self/exe", exePath, PATH_MAX);
-        if (count != -1)
-        {
-            exePath[count] = '\0';
-            std::string exeDir = std::string(exePath);
-            size_t lastSlash = exeDir.find_last_of('/');
-            if (lastSlash != std::string::npos)
-            {
-                exeDir = exeDir.substr(0, lastSlash);
-            }
-            
-            std::string manifestPath = exeDir + "/manifest.vrmanifest";
-            vrApplications->AddApplicationManifest(manifestPath.c_str());
-        }
-    }
-    
-    vrApplications->SetApplicationAutoLaunch(appKey, true);
-    vr::VR_Shutdown();
-}
-
-void StartAutoManagement()
-{
-    if (!IsSteamVRAvailable())
-    {
-        return;
-    }
-    
-    BaseStationDetector detector;
-    if (!detector.Initialize())
-    {
-        return;
-    }
-    
-    steamVRMonitor = std::make_unique<SteamVRMonitor>();
-    if (!steamVRMonitor->Initialize())
-    {
-        steamVRMonitor.reset();
-        return;
-    }
-    
-    auto WakeAllStations = [&]() {
-        const int maxRetries = 5;
-        const int scanTimeout = 20;
-        std::set<std::string> alreadyWoken;
-        std::set<std::string> allFoundStations;
-        
-        for (int retry = 0; retry < maxRetries; retry++)
-        {
-            if (retry > 0)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-            }
-            
-            auto stations = detector.ScanForBaseStations(scanTimeout);
-            
-            for (const auto& station : stations)
-            {
-                allFoundStations.insert(station.address);
-            }
-            
-            if (stations.empty())
-            {
-                continue;
-            }
-            
-            std::lock_guard<std::mutex> lock(controllersMutex);
-            
-            bool anyNewSuccess = false;
-            for (const auto& station : stations)
-            {
-                if (alreadyWoken.find(station.address) != alreadyWoken.end())
-                {
-                    continue;
-                }
-                
-                auto controller = std::make_unique<BaseStationController>();
-                if (controller->Connect(station))
-                {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                    if (controller->Wake())
-                    {
-                        managedControllers.push_back(std::move(controller));
-                        alreadyWoken.insert(station.address);
-                        anyNewSuccess = true;
-                    }
-                    else
-                    {
-                        controller->Disconnect();
-                    }
-                }
-                
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-            }
-            
-            if (retry >= maxRetries - 1 || (allFoundStations.size() > 0 && alreadyWoken.size() >= allFoundStations.size()))
-            {
-                break;
-            }
-        }
-    };
-    
-    auto SleepAllStations = [&]() {
-        const int maxRetries = 3;
-        
-        for (int retry = 0; retry < maxRetries; retry++)
-        {
-            std::lock_guard<std::mutex> lock(controllersMutex);
-            
-            if (managedControllers.empty())
-            {
-                break;
-            }
-            
-            bool allSucceeded = true;
-            std::vector<std::unique_ptr<BaseStationController>> failedControllers;
-            
-            for (auto& controller : managedControllers)
-            {
-                if (controller->Sleep())
-                {
-                    controller->Disconnect();
-                }
-                else
-                {
-                    allSucceeded = false;
-                    failedControllers.push_back(std::move(controller));
-                }
-                
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-            }
-            
-            if (allSucceeded)
-            {
-                managedControllers.clear();
-                break;
-            }
-            
-            managedControllers = std::move(failedControllers);
-            
-            if (retry < maxRetries - 1)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-            }
-            else
-            {
-                for (auto& controller : managedControllers)
-                {
-                    controller->Disconnect();
-                }
-                managedControllers.clear();
-            }
-        }
-    };
-    
-    bool lastSteamVRState = false;
-    bool stationsWoken = false;
-    std::chrono::steady_clock::time_point lastPeriodicWake = std::chrono::steady_clock::now();
-    
-    steamVRMonitor->SetStateChangeCallback([&](bool isRunning) {
-        if (isRunning == lastSteamVRState)
-            return;
-        
-        if (isRunning)
-        {
-            if (!stationsWoken)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-                WakeAllStations();
-                stationsWoken = true;
-                lastPeriodicWake = std::chrono::steady_clock::now();
-            }
-            lastSteamVRState = true;
-        }
-        else
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-            if (!steamVRMonitor->IsSteamVRRunning())
-            {
-                SleepAllStations();
-                stationsWoken = false;
-                running = false;
-                if (glfwWindow)
-                {
-                    glfwSetWindowShouldClose(glfwWindow, true);
-                }
-            }
-            lastSteamVRState = false;
-        }
-    });
-    
-    if (steamVRMonitor->IsSteamVRRunning())
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-        WakeAllStations();
-        lastSteamVRState = true;
-        stationsWoken = true;
-        lastPeriodicWake = std::chrono::steady_clock::now();
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    steamVRMonitor->StartMonitoring();
-    
-    while (running && steamVRMonitor)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        
-        if (stationsWoken)
-        {
-            bool steamVRRunning = steamVRMonitor->IsSteamVRRunning();
-            
-            if (steamVRRunning)
-            {
-                auto now = std::chrono::steady_clock::now();
-                auto timeSinceLastPeriodicWake = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastPeriodicWake).count();
-                
-                if (timeSinceLastPeriodicWake >= 5000)
-                {
-                    std::lock_guard<std::mutex> lock(controllersMutex);
-                    for (auto& controller : managedControllers)
-                    {
-                        if (controller && controller->IsConnected())
-                        {
-                            controller->SendWakePacket();
-                        }
-                    }
-                    lastPeriodicWake = now;
-                }
-            }
-        }
-    }
-    
-    SleepAllStations();
-    
-    if (steamVRMonitor)
-    {
-        steamVRMonitor->StopMonitoring();
-        steamVRMonitor->Shutdown();
-        steamVRMonitor.reset();
-    }
-}
-
-int main(int argc, char* argv[])
-{
-    bool steamVRAvailable = IsSteamVRAvailable();
-    bool launchedBySteamVR = false;
-    
-    if (steamVRAvailable)
-    {
-        RegisterManifest();
-        launchedBySteamVR = IsLaunchedBySteamVR();
-        
-        if (launchedBySteamVR)
-        {
-            autoManageThread = std::thread(StartAutoManagement);
-        }
-    }
-    
     if (!InitGLFW())
     {
-        running = false;
-        if (autoManageThread.joinable())
-        {
-            autoManageThread.join();
-        }
         return 1;
     }
-    
+
     if (!InitImGui())
     {
-        Shutdown();
-        running = false;
-        if (autoManageThread.joinable())
-        {
-            autoManageThread.join();
-        }
+        ShutdownGraphics();
         return 1;
     }
-    
-    ScanForStations();
-    
-    vr::IVRSystem* vrSystemForEvents = nullptr;
-    if (launchedBySteamVR && steamVRAvailable)
+
+    // Declaration order matters: worker's destructor joins its thread before
+    // state is destroyed, so jobs can safely capture &state.
+    GuiState state;
+    state.config.Load();
     {
-        vr::EVRInitError initError = vr::VRInitError_None;
-        vrSystemForEvents = vr::VR_Init(&initError, vr::VRApplication_Overlay);
-        if (initError != vr::VRInitError_None)
+        WorkerQueue worker(state);
+
+        state.steamvrRunning = SteamVRWatcher::IsVrServerProcessRunning();
+        PostScan(state, worker);
+        PostRegistrationCheck(state, worker);
+
+        auto lastSteamVRCheck = std::chrono::steady_clock::now();
+
+        while (!glfwWindowShouldClose(glfwWindow))
         {
-            vrSystemForEvents = nullptr;
-        }
-    }
-    
-    while (!glfwWindowShouldClose(glfwWindow) && running)
-    {
-        glfwPollEvents();
-        
-        if (vrSystemForEvents)
-        {
-            vr::VREvent_t vrEvent;
-            while (vrSystemForEvents->PollNextEvent(&vrEvent, sizeof(vrEvent)))
+            glfwPollEvents();
+
+            auto now = std::chrono::steady_clock::now();
+            if (now - lastSteamVRCheck >= std::chrono::seconds(2))
             {
-                if (vrEvent.eventType == vr::VREvent_Quit)
+                lastSteamVRCheck = now;
+                bool wasRunning = state.steamvrRunning.exchange(
+                    SteamVRWatcher::IsVrServerProcessRunning());
+                if (!wasRunning && state.steamvrRunning)
                 {
-                    if (glfwWindow)
-                    {
-                        glfwSetWindowShouldClose(glfwWindow, true);
-                    }
-                    break;
+                    PostRegistrationCheck(state, worker);
                 }
             }
+
+            ImGui_ImplOpenGL3_NewFrame();
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+
+            BuildUI(state, worker);
+
+            ImGui::Render();
+
+            int display_w, display_h;
+            glfwGetFramebufferSize(glfwWindow, &display_w, &display_h);
+            glViewport(0, 0, display_w, display_h);
+            glClearColor(0.15f, 0.15f, 0.15f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+            glfwSwapBuffers(glfwWindow);
+
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape))
+            {
+                glfwSetWindowShouldClose(glfwWindow, true);
+            }
         }
-        
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
-        
-        BuildUI();
-        
-        ImGui::Render();
-        
-        int display_w, display_h;
-        glfwGetFramebufferSize(glfwWindow, &display_w, &display_h);
-        glViewport(0, 0, display_w, display_h);
-        glClearColor(0.15f, 0.15f, 0.15f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        
-        glfwSwapBuffers(glfwWindow);
-        
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape))
-        {
-            glfwSetWindowShouldClose(glfwWindow, true);
-        }
+
+        state.quitting = true;
+        // worker destructor: drops queued jobs, joins the running one.
     }
-    
-    running = false;
-    
-    if (autoManageThread.joinable())
-    {
-        autoManageThread.join();
-    }
-    
-    if (vrSystemForEvents)
-    {
-        vr::VR_Shutdown();
-    }
-    
-    Shutdown();
+
+    ShutdownGraphics();
     return 0;
 }
-

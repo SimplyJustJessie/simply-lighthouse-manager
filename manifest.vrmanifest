@@ -3,8 +3,9 @@
 	"applications": [{
 		"app_key": "lighthouse-manager-linux",
 		"launch_type": "binary",
-		"binary_path_linux": "lighthouse-manager-gui",
-		"is_dashboard_overlay": true,
+		"binary_path_linux": "lighthouse-manager",
+		"arguments": "--auto",
+		"is_dashboard_overlay": false,
 		"strings": {
 			"en_us": {
 				"name": "Lighthouse Manager",
@@ -13,4 +14,3 @@
 		}
 	}]
 }
-
