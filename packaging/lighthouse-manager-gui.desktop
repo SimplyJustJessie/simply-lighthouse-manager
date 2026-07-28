@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lighthouse Manager
+Comment=Manage SteamVR base station power via Bluetooth LE
+Exec=lighthouse-manager-gui
+Icon=preferences-system
+Terminal=false
+Categories=Utility;Settings;
+StartupWMClass=lighthouse-manager
+Keywords=SteamVR;VR;lighthouse;base station;

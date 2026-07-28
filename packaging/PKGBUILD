@@ -1,0 +1,38 @@
+# Maintainer: simplyyjessie <simplyyjessie@pm.me>
+# Contributor: xi-ve <zunavs@gmail.com> (original openvr-lighthouse-manager-linux)
+pkgname=simply-lighthouse-manager
+pkgver=1.1.0
+pkgrel=1
+pkgdesc="Manage SteamVR base station (lighthouse) power via Bluetooth LE - fork of openvr-lighthouse-manager-linux"
+arch=('x86_64')
+url="https://github.com/SimplyJustJessie/simply-lighthouse-manager"
+license=('GPL-3.0-or-later')
+depends=('openvr' 'glfw' 'dbus' 'bluez')
+makedepends=('cmake' 'pkgconf')
+provides=('openvr-lighthouse-manager-linux')
+conflicts=('openvr-lighthouse-manager-linux')
+install="${pkgname}.install"
+# Pin to a release tag; update sha256sums with `updpkgsums` on each release.
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "${pkgname}-${pkgver}"
+
+  # Links against the system openvr package - nothing is bundled, so the
+  # binaries keep working no matter how they were built or where the AUR
+  # helper's cache went (the failure mode of the pre-fork packages).
+  cmake -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr
+  cmake --build build --parallel
+}
+
+package() {
+  cd "${pkgname}-${pkgver}"
+
+  DESTDIR="${pkgdir}" cmake --install build
+
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}
