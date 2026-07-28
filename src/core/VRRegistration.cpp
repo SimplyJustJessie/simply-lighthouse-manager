@@ -39,49 +39,45 @@ bool RegisterImpl(vr::IVRApplications* apps, bool setAutoLaunch, bool verbose,
         return false;
     }
 
-    bool needsRegistration = true;
-    if (apps->IsApplicationInstalled(APP_KEY))
+    // Drop any existing registration (current or legacy key, same or stale
+    // path) so manifest property changes actually propagate - SteamVR keeps
+    // the properties from registration time otherwise.
+    for (const char* key : {APP_KEY, LEGACY_APP_KEY})
     {
-        // Self-heal registrations pointing at a stale install location.
+        if (!apps->IsApplicationInstalled(key))
+        {
+            continue;
+        }
         char workingDir[1024] = {0};
         vr::EVRApplicationError propError = vr::VRApplicationError_None;
-        apps->GetApplicationPropertyString(APP_KEY,
+        apps->GetApplicationPropertyString(key,
                                            vr::VRApplicationProperty_WorkingDirectory_String,
                                            workingDir, sizeof(workingDir), &propError);
-        if (propError == vr::VRApplicationError_None && exeDir == workingDir)
+        if (propError == vr::VRApplicationError_None && workingDir[0] != '\0')
         {
-            needsRegistration = false;
-            if (verbose)
+            if (verbose && exeDir != workingDir)
             {
-                std::cout << "Manifest already registered\n";
-            }
-        }
-        else
-        {
-            if (verbose)
-            {
-                std::cout << "Replacing stale registration (was: " << workingDir << ")\n";
+                std::cout << "Removing old registration of " << key
+                          << " (was: " << workingDir << ")\n";
             }
             std::string oldManifest = std::string(workingDir) + "/manifest.vrmanifest";
             apps->RemoveApplicationManifest(oldManifest.c_str());
         }
     }
+    apps->RemoveApplicationManifest(manifestPath.c_str());
 
-    if (needsRegistration)
+    if (verbose)
     {
-        if (verbose)
-        {
-            std::cout << "Registering manifest: " << manifestPath << "\n";
-        }
-        vr::EVRApplicationError appError = apps->AddApplicationManifest(manifestPath.c_str());
-        if (appError != vr::VRApplicationError_None)
-        {
-            ReportError(std::string("Failed to add manifest (") +
-                            apps->GetApplicationsErrorNameFromEnum(appError) +
-                            "): " + manifestPath,
-                        verbose, error);
-            return false;
-        }
+        std::cout << "Registering manifest: " << manifestPath << "\n";
+    }
+    vr::EVRApplicationError appError = apps->AddApplicationManifest(manifestPath.c_str());
+    if (appError != vr::VRApplicationError_None)
+    {
+        ReportError(std::string("Failed to add manifest (") +
+                        apps->GetApplicationsErrorNameFromEnum(appError) +
+                        "): " + manifestPath,
+                    verbose, error);
+        return false;
     }
 
     if (setAutoLaunch)
@@ -89,12 +85,12 @@ bool RegisterImpl(vr::IVRApplications* apps, bool setAutoLaunch, bool verbose,
         vr::EVRApplicationError autoLaunchError = apps->SetApplicationAutoLaunch(APP_KEY, true);
         if (autoLaunchError != vr::VRApplicationError_None)
         {
-            // Registration itself succeeded; report but do not fail.
-            ReportError(std::string("Warning: failed to enable auto-launch: ") +
+            ReportError(std::string("Registered, but enabling auto-start failed: ") +
                             apps->GetApplicationsErrorNameFromEnum(autoLaunchError),
                         verbose, error);
+            return false;
         }
-        else if (verbose)
+        if (verbose)
         {
             std::cout << "Auto-launch enabled\n";
         }

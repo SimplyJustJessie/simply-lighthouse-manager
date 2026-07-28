@@ -1,11 +1,12 @@
 {
 	"source": "builtin",
+	"_comment": "is_dashboard_overlay must be true even though no overlay is drawn: SteamVR only lists an app under 'Start These Overlay Apps On Launch' and honors auto-launch for overlay-classified apps.",
 	"applications": [{
-		"app_key": "lighthouse-manager-linux",
+		"app_key": "simplyyjessie.lighthouse-manager",
 		"launch_type": "binary",
 		"binary_path_linux": "lighthouse-manager",
 		"arguments": "--auto",
-		"is_dashboard_overlay": false,
+		"is_dashboard_overlay": true,
 		"strings": {
 			"en_us": {
 				"name": "Lighthouse Manager",

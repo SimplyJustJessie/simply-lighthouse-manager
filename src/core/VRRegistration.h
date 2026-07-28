@@ -6,7 +6,11 @@
 namespace vrreg
 {
 
-inline constexpr const char* APP_KEY = "lighthouse-manager-linux";
+// SteamVR expects vendor-dotted app keys ("vendor.name"); SetApplicationAutoLaunch
+// rejects undotted keys with VRApplicationError_InvalidApplication.
+inline constexpr const char* APP_KEY = "simplyyjessie.lighthouse-manager";
+// Key used by pre-fork releases (auto-launch never worked under it).
+inline constexpr const char* LEGACY_APP_KEY = "lighthouse-manager-linux";
 
 // RAII wrapper for a short-lived OpenVR session. Never nest two of these and
 // never create one while any other OpenVR context is live in the process -
