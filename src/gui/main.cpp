@@ -1,8 +1,9 @@
 // Lighthouse Manager GUI - manual base station control and auto-manage
 // configuration. Holds NO persistent OpenVR context; the SteamVR-session
 // lifecycle lives in the headless CLI service (`lighthouse-manager --auto`).
-// All Bluetooth/OpenVR work runs on a single joinable worker thread; shared
-// state is only touched under GuiState::m or via atomics.
+// Background work runs on two joinable worker queues - one for Bluetooth,
+// one for every OpenVR session - so a long BLE scan never delays SteamVR
+// status. Shared state is only touched under GuiState::m or via atomics.
 
 #define GL_SILENCE_DEPRECATION
 #include <GL/gl.h>
@@ -297,7 +298,7 @@ void SaveConfig(GuiState& state)
     }
 }
 
-void BuildUI(GuiState& state, WorkerQueue& worker)
+void BuildUI(GuiState& state, WorkerQueue& bleWorker, WorkerQueue& vrWorker)
 {
     int windowWidth, windowHeight;
     glfwGetWindowSize(glfwWindow, &windowWidth, &windowHeight);
@@ -309,7 +310,8 @@ void BuildUI(GuiState& state, WorkerQueue& worker)
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_MenuBar);
 
-    const bool busy = worker.Busy();
+    const bool bleBusy = bleWorker.Busy();
+    const bool vrBusy = vrWorker.Busy();
     const bool scanning = state.scanning.load();
     const bool steamvrUp = state.steamvrRunning.load();
 
@@ -334,7 +336,7 @@ void BuildUI(GuiState& state, WorkerQueue& worker)
         {
             if (ImGui::MenuItem("Scan for Base Stations", nullptr, false, !scanning))
             {
-                PostScan(state, worker);
+                PostScan(state, bleWorker);
             }
             if (ImGui::MenuItem("Exit", "Esc"))
             {
@@ -362,7 +364,7 @@ void BuildUI(GuiState& state, WorkerQueue& worker)
     ImGui::BeginDisabled(scanning);
     if (ImGui::Button("Scan for Base Stations", ImVec2(-1, 0)))
     {
-        PostScan(state, worker);
+        PostScan(state, bleWorker);
     }
     ImGui::EndDisabled();
 
@@ -440,20 +442,20 @@ void BuildUI(GuiState& state, WorkerQueue& worker)
                 }
 
                 ImGui::TableNextColumn();
-                ImGui::BeginDisabled(busy);
+                ImGui::BeginDisabled(bleBusy);
                 if (ImGui::SmallButton("Wake"))
                 {
-                    PostControl(state, worker, station, BaseStationCommand::Wake);
+                    PostControl(state, bleWorker, station, BaseStationCommand::Wake);
                 }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Sleep"))
                 {
-                    PostControl(state, worker, station, BaseStationCommand::Sleep);
+                    PostControl(state, bleWorker, station, BaseStationCommand::Sleep);
                 }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Standby"))
                 {
-                    PostControl(state, worker, station, BaseStationCommand::Standby);
+                    PostControl(state, bleWorker, station, BaseStationCommand::Standby);
                 }
                 ImGui::EndDisabled();
 
@@ -501,13 +503,13 @@ void BuildUI(GuiState& state, WorkerQueue& worker)
     else if (!regStatus.registered)
     {
         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Not registered with SteamVR");
-        ImGui::BeginDisabled(!steamvrUp || busy);
+        ImGui::BeginDisabled(!steamvrUp || vrBusy);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.45f, 0.80f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.55f, 0.95f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.40f, 0.70f, 1.0f));
         if (ImGui::Button("Register with SteamVR (enable auto-start)", ImVec2(-1, 0)))
         {
-            PostRegister(state, worker, true);
+            PostRegister(state, vrWorker, true);
         }
         ImGui::PopStyleColor(3);
         ImGui::EndDisabled();
@@ -520,19 +522,19 @@ void BuildUI(GuiState& state, WorkerQueue& worker)
     else
     {
         ImGui::Text("SteamVR auto-start: %s", regStatus.autoLaunch ? "enabled" : "disabled");
-        ImGui::BeginDisabled(!steamvrUp || busy);
+        ImGui::BeginDisabled(!steamvrUp || vrBusy);
         if (regStatus.autoLaunch)
         {
             if (ImGui::Button("Disable auto-start"))
             {
-                PostRegister(state, worker, false);
+                PostRegister(state, vrWorker, false);
             }
         }
         else
         {
             if (ImGui::Button("Enable auto-start"))
             {
-                PostRegister(state, worker, true);
+                PostRegister(state, vrWorker, true);
             }
         }
         ImGui::EndDisabled();
@@ -664,16 +666,20 @@ int main(int, char**)
         return 1;
     }
 
-    // Declaration order matters: worker's destructor joins its thread before
-    // state is destroyed, so jobs can safely capture &state.
+    // Declaration order matters: the workers' destructors join their threads
+    // before state is destroyed, so jobs can safely capture &state.
+    // Bluetooth and OpenVR work run on separate queues so a long BLE scan
+    // never delays SteamVR status/registration (each domain still serializes
+    // within its own queue; every OpenVR session lives on vrWorker only).
     GuiState state;
     state.config.Load();
     {
-        WorkerQueue worker(state);
+        WorkerQueue bleWorker(state);
+        WorkerQueue vrWorker(state);
 
         state.steamvrRunning = SteamVRWatcher::IsVrServerProcessRunning();
-        PostScan(state, worker);
-        PostRegistrationCheck(state, worker);
+        PostScan(state, bleWorker);
+        PostRegistrationCheck(state, vrWorker);
 
         auto lastSteamVRCheck = std::chrono::steady_clock::now();
 
@@ -689,7 +695,7 @@ int main(int, char**)
                     SteamVRWatcher::IsVrServerProcessRunning());
                 if (!wasRunning && state.steamvrRunning)
                 {
-                    PostRegistrationCheck(state, worker);
+                    PostRegistrationCheck(state, vrWorker);
                 }
             }
 
@@ -697,7 +703,7 @@ int main(int, char**)
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
 
-            BuildUI(state, worker);
+            BuildUI(state, bleWorker, vrWorker);
 
             ImGui::Render();
 
@@ -718,7 +724,7 @@ int main(int, char**)
         }
 
         state.quitting = true;
-        // worker destructor: drops queued jobs, joins the running one.
+        // worker destructors: drop queued jobs, join the running ones.
     }
 
     ShutdownGraphics();
