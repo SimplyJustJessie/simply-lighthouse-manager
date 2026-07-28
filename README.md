@@ -1,148 +1,90 @@
-# Lighthouse Manager - Linux Edition
+# Simply Lighthouse Manager
 
-This is a Linux port of [OVR Lighthouse Manager](https://github.com/kurotu/OVR-Lighthouse-Manager) by [kurotu](https://github.com/kurotu). This application manages SteamVR base station (lighthouse) power via Bluetooth LE.
+Manage SteamVR base station (lighthouse) power over Bluetooth LE on Linux: wake your base stations when SteamVR starts and put them to sleep when it exits.
 
-**Linux Port Maintainer:** [@xi-ve](https://github.com/xi-ve)
+**This is a fork** of [openvr-lighthouse-manager-linux](https://github.com/xi-ve/openvr-lighthouse-manager-linux) by [@xi-ve](https://github.com/xi-ve), which is itself a Linux port of [OVR Lighthouse Manager](https://github.com/kurotu/OVR-Lighthouse-Manager) by [kurotu](https://github.com/kurotu). This fork reworks the internals (BlueZ D-Bus instead of `bluetoothctl` scraping, a crash-free threading model, a headless SteamVR service instead of an auto-launched GUI window) and adds per-station auto-manage configuration.
+
+**Fork Maintainer:** [@simplyyjessie](https://github.com/SimplyJustJessie)
+
+## How it works
+
+Two binaries share one core:
+
+- **`lighthouse-manager`** - CLI. Also the headless service SteamVR auto-launches (`--auto`): it wakes your configured stations on SteamVR start, keeps them awake, and puts them to sleep on SteamVR exit.
+- **`lighthouse-manager-gui`** - desktop app for manual control (wake/sleep/standby per station) and configuration (choose which stations are auto-managed, enable/disable auto-start). Safe to use while the service is running.
 
 ## Installation
 
 ### Arch Linux (AUR)
 
-This package is available on the Arch User Repository (AUR):
-
 ```bash
-yay -S openvr-lighthouse-manager-linux
+yay -S simply-lighthouse-manager
 ```
 
-Or using `makepkg`:
+(Replaces the older `openvr-lighthouse-manager-linux` package if installed.)
+
+### From source
+
+Dependencies: `cmake`, `pkg-config`, a C++17 compiler, `dbus`, `glfw` (GUI), and OpenVR (auto-resolved, see below).
 
 ```bash
-git clone https://aur.archlinux.org/openvr-lighthouse-manager-linux.git
-cd openvr-lighthouse-manager-linux
-makepkg -si
+./scripts/build.sh            # -> build/bin/lighthouse-manager{,-gui}
+./scripts/install.sh          # installs to ~/.local, registers with SteamVR if running
 ```
 
-**AUR Package:** [openvr-lighthouse-manager-linux](https://aur.archlinux.org/packages/openvr-lighthouse-manager-linux)
+OpenVR is resolved in this order: `-DOPENVR_ROOT=<sdk>` (or `./scripts/build.sh --openvr-root <sdk>`) → system install (e.g. the Arch `openvr` package) → automatic download of the pinned SDK release. No manual SDK placement needed.
 
-The AUR package will automatically:
-- Install binaries to `/usr/bin`
-- Register the overlay with SteamVR on installation
-- Handle updates and uninstallation
+To uninstall a from-source install: `./scripts/uninstall.sh`.
 
-### Building from Source
+## Setting up auto-management
 
-If you prefer to build from source or are using a different distribution, see the [Building](#building) section below.
+Auto-management is **off by default** - the service manages nothing until you opt stations in.
+
+1. Enable auto-start, **once, while SteamVR is running**:
+   ```bash
+   lighthouse-manager --register-manifest
+   ```
+2. Choose the stations to manage:
+   - **GUI**: tick the station's "Auto" checkbox and press *Save configuration*, or
+   - **CLI**:
+     ```bash
+     lighthouse-manager --manage LHB-XXXXXXXX    # add one station
+     lighthouse-manager --manage-all             # or: manage everything discovered
+     lighthouse-manager --unmanage LHB-XXXXXXXX  # exclude again
+     lighthouse-manager --list-managed           # show config
+     ```
+
+From then on SteamVR starts and stops the service automatically; updates apply in place without re-registration. Settings live in `~/.config/lighthouse-manager/config.ini`, and a running service picks up changes within ~15 seconds.
+
+## CLI reference
+
+```bash
+lighthouse-manager --list                  # scan and list base stations
+lighthouse-manager --wake <id>             # wake  (id, MAC, or name substring)
+lighthouse-manager --sleep <id>            # sleep
+lighthouse-manager --standby <id>          # standby
+lighthouse-manager --auto                  # run the SteamVR-session service in the foreground
+lighthouse-manager --register-manifest     # register + enable auto-start (SteamVR must run)
+lighthouse-manager --disable-autolaunch    # disable auto-start
+lighthouse-manager --check-registration    # show registration status
+```
+
+## Hyprland / window managers
+
+The GUI sets its app id / window class to `lighthouse-manager`. To float it on Hyprland:
+
+```
+windowrule = float, class:lighthouse-manager
+```
 
 ## Requirements
 
-### System Requirements
-- Linux with BlueZ Bluetooth stack
-- Bluetooth LE support (Bluetooth 4.0+)
-- SteamVR Base Station 1.0 or 2.0
-
-### Build Dependencies
-
-**Ubuntu/Debian:**
-```bash
-sudo apt install build-essential pkg-config libbluetooth-dev libdbus-1-dev libglfw3-dev
-```
-
-**Fedora/RHEL:**
-```bash
-sudo dnf install gcc-c++ pkg-config bluez-libs-devel dbus-devel glfw-devel
-```
-
-**Arch Linux:**
-```bash
-sudo pacman -S base-devel pkg-config bluez-libs dbus glfw
-```
-
-### Runtime Dependencies
-- OpenVR SDK (included in project at `../lib/openvr`)
-- SteamVR (for base station detection)
-
-## Building
-
-If you're building from source:
-
-```bash
-./scripts/build.sh
-```
-
-The build script will:
-- Clean the build directory by default (use `--no-clean` or `--incremental` to skip)
-- Compile both CLI and GUI versions
-- Output binaries to `build/bin/`
-
-### Manual Installation (from source)
-
-To install as a SteamVR addon (auto-launches with SteamVR):
-
-```bash
-./scripts/install.sh
-```
-
-This will:
-- Install the binary to `~/.local/share/SteamVR/drivers/lighthouse-manager/bin/linux64/`
-- Register the manifest with SteamVR
-- Enable automatic base station management when SteamVR starts
-
-To uninstall:
-
-```bash
-./scripts/uninstall.sh
-```
-
-## Usage
-
-### Automatic Mode (SteamVR Addon)
-
-When installed as a SteamVR addon, the application will automatically:
-- Start when SteamVR launches
-- Scan for base stations and wake them when SteamVR starts
-- Put base stations to sleep when SteamVR shuts down
-
-### Manual Usage
-
-#### GUI Mode (Default)
-
-```bash
-./scripts/run.sh
-```
-
-Or run directly:
-```bash
-./build/bin/lighthouse-manager-gui
-```
-
-#### CLI Mode
-
-```bash
-./scripts/run.sh --cli
-```
-
-Or run directly:
-```bash
-./build/bin/lighthouse-manager
-```
-
-#### CLI Commands
-
-```bash
-# List detected base stations
-./build/bin/lighthouse-manager --list
-
-# Enable/wake a base station
-./build/bin/lighthouse-manager --enable <id>
-
-# Disable/sleep a base station
-./build/bin/lighthouse-manager --disable <id>
-
-# Auto-manage base stations (monitor SteamVR and control stations)
-./build/bin/lighthouse-manager --auto
-```
+- Linux with BlueZ (running `bluetoothd`), Bluetooth 4.0+ adapter
+- SteamVR (for auto-management; manual control works without it)
+- Base Station 2.0 fully supported; 1.0 (HTC BS) detection works, power control not yet implemented
 
 ## Credits
 
 - **Original Project:** [OVR Lighthouse Manager](https://github.com/kurotu/OVR-Lighthouse-Manager) by [kurotu](https://github.com/kurotu)
-- **Linux Port:** [@xi-ve](https://github.com/xi-ve)
+- **Linux Port:** [openvr-lighthouse-manager-linux](https://github.com/xi-ve/openvr-lighthouse-manager-linux) by [@xi-ve](https://github.com/xi-ve)
+- **This Fork:** [@simplyyjessie](https://github.com/SimplyJustJessie)
