@@ -489,33 +489,55 @@ void BuildUI(GuiState& state, WorkerQueue& worker)
 
     ImGui::Spacing();
 
-    if (regStatusKnown)
+    if (!regStatusKnown)
     {
-        ImGui::Text("SteamVR auto-start: %s",
-                    !regStatus.registered ? "not registered"
-                    : regStatus.autoLaunch ? "enabled"
-                                           : "disabled");
+        ImGui::Text("SteamVR auto-start: unknown");
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                           "Start SteamVR to check the registration.");
+    }
+    else if (!regStatus.registered)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Not registered with SteamVR");
+        ImGui::BeginDisabled(!steamvrUp || busy);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.45f, 0.80f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.55f, 0.95f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.40f, 0.70f, 1.0f));
+        if (ImGui::Button("Register with SteamVR (enable auto-start)", ImVec2(-1, 0)))
+        {
+            PostRegister(state, worker, true);
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::EndDisabled();
+        if (!steamvrUp)
+        {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                               "(start SteamVR to register)");
+        }
     }
     else
     {
-        ImGui::Text("SteamVR auto-start: unknown (start SteamVR to query)");
-    }
-
-    ImGui::BeginDisabled(!steamvrUp || busy);
-    if (ImGui::Button("Enable auto-start"))
-    {
-        PostRegister(state, worker, true);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Disable auto-start"))
-    {
-        PostRegister(state, worker, false);
-    }
-    ImGui::EndDisabled();
-    if (!steamvrUp)
-    {
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "(requires SteamVR running)");
+        ImGui::Text("SteamVR auto-start: %s", regStatus.autoLaunch ? "enabled" : "disabled");
+        ImGui::BeginDisabled(!steamvrUp || busy);
+        if (regStatus.autoLaunch)
+        {
+            if (ImGui::Button("Disable auto-start"))
+            {
+                PostRegister(state, worker, false);
+            }
+        }
+        else
+        {
+            if (ImGui::Button("Enable auto-start"))
+            {
+                PostRegister(state, worker, true);
+            }
+        }
+        ImGui::EndDisabled();
+        if (!steamvrUp)
+        {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "(requires SteamVR running)");
+        }
     }
 
     ImGui::Separator();
