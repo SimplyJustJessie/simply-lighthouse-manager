@@ -9,14 +9,10 @@ PREFIX="${PREFIX:-$HOME/.local}"
 
 cd "$PROJECT_ROOT"
 
-# Bundle libopenvr_api.so next to the binaries unless a system openvr is
-# installed - the $ORIGIN rpath in the binaries picks the bundled copy up.
-BUNDLE=ON
-if pkg-config --exists openvr 2>/dev/null || [ -f /usr/lib/libopenvr_api.so ]; then
-    BUNDLE=OFF
-fi
-
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIGHTHOUSE_BUNDLE_OPENVR=$BUNDLE
+# The build uses the pinned OpenVR SDK (see CMakeLists.txt for why the
+# system openvr package is not used); bundle its loader library next to the
+# binaries where the $ORIGIN rpath finds it.
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIGHTHOUSE_BUNDLE_OPENVR=ON
 cmake --build build --parallel
 cmake --install build --prefix "$PREFIX"
 

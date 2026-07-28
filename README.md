@@ -32,7 +32,7 @@ Dependencies: `cmake`, `pkg-config`, a C++17 compiler, `dbus`, `glfw` (GUI), and
 ./scripts/install.sh          # installs to ~/.local, registers with SteamVR if running
 ```
 
-OpenVR is resolved in this order: `-DOPENVR_ROOT=<sdk>` (or `./scripts/build.sh --openvr-root <sdk>`) → system install (e.g. the Arch `openvr` package) → automatic download of the pinned SDK release. No manual SDK placement needed.
+OpenVR is resolved in this order: `-DOPENVR_ROOT=<sdk>` (or `./scripts/build.sh --openvr-root <sdk>`) → automatic download of the pinned SDK release. No manual SDK placement needed. A system openvr package is deliberately *not* used unless you pass `-DOPENVR_USE_SYSTEM=ON` — distro openvr headers often request newer OpenVR interfaces than the installed SteamVR runtime supports, which breaks `VR_Init` with `InterfaceNotFound (105)`.
 
 To uninstall a from-source install: `./scripts/uninstall.sh`.
 

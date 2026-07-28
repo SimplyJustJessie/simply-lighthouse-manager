@@ -32,10 +32,19 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(DBUS REQUIRED IMPORTED_TARGET dbus-1)
 
 # ---------------------------------------------------------------------------
-# OpenVR resolution: -DOPENVR_ROOT hint -> system install -> FetchContent of
-# the pinned Valve release (uses the prebuilt linux64 library it ships).
+# OpenVR resolution: -DOPENVR_ROOT hint -> pinned Valve release (downloaded,
+# uses the prebuilt linux64 library it ships) -> system install only when
+# OPENVR_USE_SYSTEM=ON.
+#
+# The pinned SDK deliberately outranks a system openvr package: interface
+# versions are baked in from the HEADERS at compile time, and distro packages
+# (e.g. Arch openvr 2.15.x requesting IVRSystem_026) routinely run ahead of
+# the SteamVR runtime users actually have (IVRSystem_023), which makes
+# VR_Init fail with InterfaceNotFound (105). Old headers + new runtime is
+# always safe because OpenVR interfaces are additive.
 # ---------------------------------------------------------------------------
 set(OPENVR_ROOT "" CACHE PATH "Root of an OpenVR SDK (containing headers/ and lib|bin/linux64/libopenvr_api.so)")
+option(OPENVR_USE_SYSTEM "Link against a system-installed OpenVR instead of the pinned SDK" OFF)
 
 if(OPENVR_ROOT)
     find_path(_openvr_include openvr.h
@@ -51,7 +60,7 @@ if(OPENVR_ROOT)
     endif()
 endif()
 
-if(NOT _openvr_library)
+if(NOT _openvr_library AND OPENVR_USE_SYSTEM)
     find_path(_openvr_include openvr.h PATH_SUFFIXES openvr)
     find_library(_openvr_library openvr_api)
 endif()
