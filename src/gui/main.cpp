@@ -261,8 +261,9 @@ void PostRegister(GuiState& state, WorkerQueue& worker, bool enable)
     worker.Post(
         [&state, enable]()
         {
-            bool ok = enable ? vrreg::RegisterManifest(true, false)
-                             : vrreg::DisableAutoLaunch(false);
+            std::string error;
+            bool ok = enable ? vrreg::RegisterManifest(true, false, &error)
+                             : vrreg::DisableAutoLaunch(false, &error);
             if (ok)
             {
                 state.SetStatus(enable ? "Auto-start with SteamVR enabled"
@@ -271,7 +272,9 @@ void PostRegister(GuiState& state, WorkerQueue& worker, bool enable)
             }
             else
             {
-                state.SetStatus("SteamVR registration change failed - is SteamVR running?", true);
+                state.SetStatus("Registration failed: " +
+                                    (error.empty() ? std::string("unknown error") : error),
+                                true);
             }
 
             vrreg::Status status = vrreg::CheckRegistration();

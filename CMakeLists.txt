@@ -17,6 +17,10 @@ include(GNUInstallDirs)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+# SteamVR registration resolves manifest.vrmanifest next to the executable,
+# so build-tree runs need a copy in bin/ just like installed runs have.
+configure_file(manifest.vrmanifest ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/manifest.vrmanifest COPYONLY)
+
 add_compile_options(-Wall -Wextra)
 if(LIGHTHOUSE_SANITIZE)
     add_compile_options(-fsanitize=${LIGHTHOUSE_SANITIZE} -fno-omit-frame-pointer)

@@ -73,13 +73,15 @@ std::string ExecutableDir();
 // choice to disable auto-launch in SteamVR is otherwise respected.
 // Requires SteamVR to be running. Creates its own scoped VR session; do not
 // call while another OpenVR context is live.
-bool RegisterManifest(bool setAutoLaunch, bool verbose);
+// On failure the human-readable reason is written to *error when provided.
+bool RegisterManifest(bool setAutoLaunch, bool verbose, std::string* error = nullptr);
 
 // Same, but reuses a caller-owned session (for use inside the auto service).
-bool RegisterManifestWithSession(vr::IVRSystem* system, bool setAutoLaunch, bool verbose);
+bool RegisterManifestWithSession(vr::IVRSystem* system, bool setAutoLaunch, bool verbose,
+                                 std::string* error = nullptr);
 
 // Turns off auto-launch. Requires SteamVR to be running.
-bool DisableAutoLaunch(bool verbose);
+bool DisableAutoLaunch(bool verbose, std::string* error = nullptr);
 
 Status CheckRegistration();
 
