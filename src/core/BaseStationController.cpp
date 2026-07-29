@@ -249,26 +249,32 @@ bool BaseStationController::EnsureConnection()
         return false;
     }
 
-    if (!connected)
+    if (devicePath.empty())
     {
-        if (devicePath.empty() || !ConnectToDevice())
-        {
-            return false;
-        }
-        connected = true;
-    }
-
-    return true;
-}
-
-bool BaseStationController::SendCommand(BaseStationCommand command)
-{
-    if (!connected)
-    {
-        std::cerr << "Not connected to base station\n";
         return false;
     }
 
+    // Do not trust the local flag: BLE links drop silently mid-session, and
+    // BlueZ removes the GATT objects when they do. Check the real state and
+    // reconnect so keep-alives and the sleep-on-exit path keep working.
+    bool actuallyConnected = false;
+    if (client->GetBoolProperty(devicePath, "org.bluez.Device1", "Connected", actuallyConnected) &&
+        actuallyConnected)
+    {
+        connected = true;
+        return true;
+    }
+
+    if (connected)
+    {
+        std::cerr << "Connection to " << stationInfo.address << " dropped - reconnecting\n";
+    }
+    connected = ConnectToDevice();
+    return connected;
+}
+
+bool BaseStationController::SendCommand(BaseStationCommand command, int retryRounds)
+{
     uint8_t value = static_cast<uint8_t>(command);
 
     bool isV1 = stationInfo.name.rfind("HTC BS", 0) == 0 ||
@@ -280,7 +286,7 @@ bool BaseStationController::SendCommand(BaseStationCommand command)
         return false;
     }
 
-    const int retryCount = 10;
+    const int retryCount = retryRounds > 0 ? retryRounds : 1;
     bool success = false;
 
     for (int i = 0; i < retryCount; i++)
@@ -318,9 +324,9 @@ bool BaseStationController::Wake()
     return SendCommand(BaseStationCommand::Wake);
 }
 
-bool BaseStationController::Sleep()
+bool BaseStationController::Sleep(int retryRounds)
 {
-    return SendCommand(BaseStationCommand::Sleep);
+    return SendCommand(BaseStationCommand::Sleep, retryRounds);
 }
 
 bool BaseStationController::Standby()

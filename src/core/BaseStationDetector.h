@@ -39,6 +39,10 @@ public:
     std::vector<BaseStationInfo> ScanForBaseStations(
         int timeoutSeconds = 10, const std::function<bool()>& shouldCancel = {});
 
+    // Stations BlueZ already knows (paired or previously seen) - instant, no
+    // radio discovery.
+    std::vector<BaseStationInfo> ListKnownStations();
+
     bool IsBluetoothAvailable() const;
 
 private:

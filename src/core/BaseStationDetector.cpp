@@ -103,6 +103,17 @@ void BaseStationDetector::CollectStations(std::vector<BaseStationInfo>& stations
     }
 }
 
+std::vector<BaseStationInfo> BaseStationDetector::ListKnownStations()
+{
+    std::vector<BaseStationInfo> stations;
+    if (!initialized && !Initialize())
+    {
+        return stations;
+    }
+    CollectStations(stations);
+    return stations;
+}
+
 std::vector<BaseStationInfo> BaseStationDetector::ScanForBaseStations(
     int timeoutSeconds, const std::function<bool()>& shouldCancel)
 {

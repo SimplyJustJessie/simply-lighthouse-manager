@@ -32,10 +32,83 @@ bool AutoManager::IsManaging(const std::string& address) const
                        { return c->GetStationInfo().address == address; });
 }
 
+void AutoManager::WakeStationsParallel(const std::vector<BaseStationInfo>& stations,
+                                       CancellationToken& token)
+{
+    std::vector<const BaseStationInfo*> targets;
+    for (const auto& station : stations)
+    {
+        if (IsManaging(station.address))
+        {
+            continue;
+        }
+        if (!config.IsManaged(station))
+        {
+            std::cout << "[auto] Skipping " << station.name << " (excluded by config)\n";
+            continue;
+        }
+        targets.push_back(&station);
+    }
+    if (targets.empty() || token.IsCancelled())
+    {
+        return;
+    }
+
+    std::mutex adoptMutex;
+    std::vector<std::thread> workers;
+    for (const BaseStationInfo* target : targets)
+    {
+        workers.emplace_back(
+            [this, target, &adoptMutex]()
+            {
+                auto controller = std::make_unique<BaseStationController>();
+                if (controller->Connect(*target) && controller->Wake())
+                {
+                    std::cout << "[auto] Woke " << target->name << "\n";
+                    std::lock_guard<std::mutex> lock(adoptMutex);
+                    controllers.push_back(std::move(controller));
+                }
+                else
+                {
+                    std::cerr << "[auto] Failed to wake " << target->name << "\n";
+                    controller->Disconnect();
+                }
+            });
+    }
+    for (auto& worker : workers)
+    {
+        worker.join();
+    }
+}
+
 void AutoManager::WakeManaged(CancellationToken& token)
 {
-    const int maxRetries = 5;
-    const int scanTimeoutSeconds = 20;
+    // Fast path: stations BlueZ already knows wake immediately, in parallel.
+    WakeStationsParallel(detector.ListKnownStations(), token);
+    if (token.IsCancelled())
+    {
+        return;
+    }
+
+    // Discovery is only needed for stations BlueZ has never seen: always a
+    // possibility in "all" mode, and in "selected" mode only when a
+    // configured station is still missing.
+    bool missingConfigured = false;
+    for (const auto& [address, entry] : config.stations)
+    {
+        if (entry.managed && !IsManaging(address))
+        {
+            missingConfigured = true;
+            break;
+        }
+    }
+    if (config.manageMode != Config::ManageMode::All && !missingConfigured)
+    {
+        return;
+    }
+
+    const int maxRetries = 3;
+    const int scanTimeoutSeconds = 15;
     std::set<std::string> everSeen;
 
     for (int retry = 0; retry < maxRetries && !token.IsCancelled(); retry++)
@@ -45,50 +118,14 @@ void AutoManager::WakeManaged(CancellationToken& token)
             break;
         }
 
-        auto stations = detector.ScanForBaseStations(scanTimeoutSeconds);
-
+        auto stations = detector.ScanForBaseStations(
+            scanTimeoutSeconds, [&token] { return token.IsCancelled(); });
         for (const auto& station : stations)
         {
-            if (token.IsCancelled())
-            {
-                break;
-            }
             everSeen.insert(station.address);
-
-            if (IsManaging(station.address))
-            {
-                continue;
-            }
-            if (!config.IsManaged(station))
-            {
-                std::cout << "[auto] Skipping " << station.name
-                          << " (excluded by config)\n";
-                continue;
-            }
-
-            auto controller = std::make_unique<BaseStationController>();
-            if (controller->Connect(station))
-            {
-                if (!token.WaitFor(std::chrono::milliseconds(200)))
-                {
-                    break;
-                }
-                if (controller->Wake())
-                {
-                    std::cout << "[auto] Woke " << station.name << "\n";
-                    controllers.push_back(std::move(controller));
-                }
-                else
-                {
-                    std::cerr << "[auto] Failed to wake " << station.name << "\n";
-                    controller->Disconnect();
-                }
-            }
-            else
-            {
-                std::cerr << "[auto] Failed to connect to " << station.name << "\n";
-            }
         }
+
+        WakeStationsParallel(stations, token);
 
         if (!everSeen.empty() && controllers.size() >= everSeen.size())
         {
@@ -127,7 +164,9 @@ void AutoManager::SleepManagedFast(std::chrono::milliseconds budget)
             workers.emplace_back(
                 [&, i]()
                 {
-                    if (controllers[i]->Sleep())
+                    // Few retry rounds: this path runs inside SteamVR's
+                    // shutdown grace period.
+                    if (controllers[i]->Sleep(2))
                     {
                         controllers[i]->Disconnect();
                         succeeded[i] = 1;

@@ -27,9 +27,12 @@ public:
     bool Connect(const BaseStationInfo& station);
     void Disconnect();
 
-    bool SendCommand(BaseStationCommand command);
+    // retryRounds bounds the outer retry loop; the default favors
+    // reliability, exit paths pass a small value to stay within SteamVR's
+    // shutdown grace period.
+    bool SendCommand(BaseStationCommand command, int retryRounds = 10);
     bool Wake();
-    bool Sleep();
+    bool Sleep(int retryRounds = 10);
     bool Standby();
     bool SendWakePacket();
 

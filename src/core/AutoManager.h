@@ -34,8 +34,10 @@ class AutoManager
 public:
     AutoManager(BaseStationDetector& detector, Config config);
 
-    // Scan (with retries) and wake every station the config marks managed.
-    // Stations stay connected for keep-alives. Interruptible via token.
+    // Wakes every station the config marks managed. Known stations are woken
+    // immediately in parallel (no discovery latency); a discovery scan only
+    // runs afterwards to catch stations BlueZ has not seen yet. Stations stay
+    // connected for keep-alives. Interruptible via token.
     void WakeManaged(CancellationToken& token);
 
     // Re-sends a wake packet to all connected stations. Call periodically
@@ -59,4 +61,9 @@ private:
     BaseStationDetector& detector;
     Config config;
     std::vector<std::unique_ptr<BaseStationController>> controllers;
+
+    // Connect+wake the given stations concurrently (one thread each) and
+    // adopt the successful controllers. Skips unmanaged/already-managed ones.
+    void WakeStationsParallel(const std::vector<BaseStationInfo>& stations,
+                              CancellationToken& token);
 };
