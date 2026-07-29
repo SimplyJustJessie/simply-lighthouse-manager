@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -49,7 +50,13 @@ public:
     bool StartDiscovery(const std::string& adapterPath);
     void StopDiscovery(const std::string& adapterPath);
 
-    bool ConnectDevice(const std::string& devicePath);     // AlreadyConnected == success
+    // Waits out bluetoothd's full LE connect attempt (~20s) - aborting the
+    // D-Bus call early does NOT stop the connect inside bluetoothd, it just
+    // guarantees the next call collides with it (org.bluez.Error.InProgress).
+    // shouldAbort is polled every ~100ms and returns control promptly (the
+    // in-daemon attempt still runs its course). AlreadyConnected == success.
+    bool ConnectDevice(const std::string& devicePath,
+                       const std::function<bool()>& shouldAbort = {});
     bool DisconnectDevice(const std::string& devicePath);  // NotConnected == success
 
     // Trusted devices persist in BlueZ's storage (untrusted ones are purged

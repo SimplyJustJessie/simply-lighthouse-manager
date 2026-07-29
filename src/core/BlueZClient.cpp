@@ -332,26 +332,66 @@ void Client::StopDiscovery(const std::string& adapterPath)
     CallSimple(adapterPath.c_str(), ADAPTER_IFACE, "StopDiscovery", 5000, nullptr);
 }
 
-bool Client::ConnectDevice(const std::string& devicePath)
+bool Client::ConnectDevice(const std::string& devicePath,
+                           const std::function<bool()>& shouldAbort)
 {
-    // A connect to an advertising station normally completes in 1-3s; a
-    // shorter timeout cycles hung attempts faster instead of stalling 10s.
     DBusMessage* msg = dbus_message_new_method_call(
         BLUEZ_BUS, devicePath.c_str(), DEVICE_IFACE, "Connect");
-    std::string errorName;
-    DBusMessage* reply = Call(msg, 6000, &errorName);
-    if (reply)
+    if (!msg || !conn)
     {
-        dbus_message_unref(reply);
-        return true;
+        if (msg)
+        {
+            dbus_message_unref(msg);
+        }
+        return false;
     }
-    if (errorName == "org.bluez.Error.AlreadyConnected")
+
+    // Async call so cancellation can be polled while bluetoothd runs its
+    // full LE connect attempt. 30s ceiling > bluetoothd's own ~20s attempt,
+    // so NoReply here means a genuine failure, not an abandoned call.
+    DBusPendingCall* pending = nullptr;
+    if (!dbus_connection_send_with_reply(conn, msg, &pending, 30000) || !pending)
     {
-        return true;
+        dbus_message_unref(msg);
+        return false;
     }
-    std::cerr << "Connect failed for " << devicePath << ": "
-              << (errorName.empty() ? "timeout/no reply" : errorName) << "\n";
-    return false;
+    dbus_message_unref(msg);
+
+    while (!dbus_pending_call_get_completed(pending))
+    {
+        if (shouldAbort && shouldAbort())
+        {
+            dbus_pending_call_cancel(pending);
+            dbus_pending_call_unref(pending);
+            return false;
+        }
+        dbus_connection_read_write_dispatch(conn, 100);
+    }
+
+    DBusMessage* reply = dbus_pending_call_steal_reply(pending);
+    dbus_pending_call_unref(pending);
+    if (!reply)
+    {
+        return false;
+    }
+
+    bool ok;
+    if (dbus_message_get_type(reply) == DBUS_MESSAGE_TYPE_ERROR)
+    {
+        const char* errorName = dbus_message_get_error_name(reply);
+        ok = errorName && std::strcmp(errorName, "org.bluez.Error.AlreadyConnected") == 0;
+        if (!ok)
+        {
+            std::cerr << "Connect failed for " << devicePath << ": "
+                      << (errorName ? errorName : "unknown error") << "\n";
+        }
+    }
+    else
+    {
+        ok = true;
+    }
+    dbus_message_unref(reply);
+    return ok;
 }
 
 bool Client::DisconnectDevice(const std::string& devicePath)

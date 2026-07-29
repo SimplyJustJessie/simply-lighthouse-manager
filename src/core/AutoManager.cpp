@@ -73,18 +73,7 @@ void AutoManager::WakeStationsParallel(const std::vector<BaseStationInfo>& stati
             {
                 auto abort = [&token] { return token.IsCancelled(); };
                 auto controller = std::make_unique<BaseStationController>();
-                // Sleeping stations advertise sparsely; a connect only lands
-                // when an attempt overlaps an advertisement. Keep trying in
-                // passes rather than giving up after one round.
-                bool ok = false;
-                for (int pass = 0; pass < 3 && !ok && !abort(); pass++)
-                {
-                    if (pass > 0)
-                    {
-                        std::this_thread::sleep_for(std::chrono::seconds(2));
-                    }
-                    ok = controller->Connect(*target, abort) && controller->Wake(10, abort);
-                }
+                bool ok = controller->Connect(*target, abort) && controller->Wake(10, abort);
                 if (ok)
                 {
                     std::cout << "[auto] Woke " << target->name << "\n";

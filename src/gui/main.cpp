@@ -236,7 +236,7 @@ void PostControl(GuiState& state, WorkerQueue& worker, const BaseStationInfo& st
             state.SetStatus("Connecting to " + station.name + "...", false);
 
             BaseStationController controller;
-            if (!controller.Connect(station))
+            if (!controller.Connect(station, [&state] { return state.quitting.load(); }))
             {
                 state.SetStatus("Failed to connect to " + station.name, true);
                 return;

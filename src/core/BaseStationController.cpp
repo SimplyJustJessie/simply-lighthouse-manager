@@ -4,7 +4,6 @@
 #include <cctype>
 #include <chrono>
 #include <iostream>
-#include <mutex>
 #include <thread>
 
 #include "BlueZClient.h"
@@ -12,12 +11,6 @@
 
 namespace
 {
-
-// One Bluetooth adapter can only initiate one LE connection at a time;
-// parallel wake workers issuing simultaneous connects just make BlueZ
-// reject the losers instantly. Serialize the connect step process-wide
-// (GATT traffic on established links still runs concurrently).
-std::mutex g_bleConnectMutex;
 
 std::string ToLowerCopy(std::string s)
 {
@@ -86,10 +79,11 @@ void BaseStationController::Disconnect()
 
 bool BaseStationController::ConnectToDevice(const std::function<bool()>& shouldAbort)
 {
-    // Growing backoff: when the adapter is busy (connecting to another
-    // station or scanning), BlueZ rejects connects instantly - rapid-fire
-    // retries just burn through the attempts inside the same busy window.
-    const int retryCount = 5;
+    // ConnectDevice waits out bluetoothd's full connect attempt (abortable),
+    // so one patient attempt beats a retry storm: retries against an attempt
+    // that is still running inside the daemon just collide with it
+    // (org.bluez.Error.InProgress). One short second chance covers hiccups.
+    const int retryCount = 2;
     for (int i = 0; i < retryCount; i++)
     {
         if (shouldAbort && shouldAbort())
@@ -98,15 +92,10 @@ bool BaseStationController::ConnectToDevice(const std::function<bool()>& shouldA
         }
         if (i > 0)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500 * i));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         }
 
-        bool ok;
-        {
-            std::lock_guard<std::mutex> lock(g_bleConnectMutex);
-            ok = client->ConnectDevice(devicePath);
-        }
-        if (ok)
+        if (client->ConnectDevice(devicePath, shouldAbort))
         {
             // Give BlueZ a moment to settle the connection before GATT access.
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -114,8 +103,7 @@ bool BaseStationController::ConnectToDevice(const std::function<bool()>& shouldA
         }
     }
 
-    std::cerr << "Failed to connect to " << stationInfo.address
-              << " after " << retryCount << " attempts\n";
+    std::cerr << "Failed to connect to " << stationInfo.address << "\n";
     return false;
 }
 
