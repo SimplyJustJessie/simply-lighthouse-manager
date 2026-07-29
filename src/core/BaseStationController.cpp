@@ -58,6 +58,12 @@ bool BaseStationController::Connect(const BaseStationInfo& station)
     }
 
     connected = ConnectToDevice();
+    if (connected)
+    {
+        // Keep the station in BlueZ's persistent storage so future runs can
+        // connect immediately without waiting for a discovery scan.
+        client->SetDeviceTrusted(devicePath, true);
+    }
     return connected;
 }
 

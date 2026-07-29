@@ -344,6 +344,35 @@ bool Client::DisconnectDevice(const std::string& devicePath)
                       "org.bluez.Error.NotConnected");
 }
 
+bool Client::SetDeviceTrusted(const std::string& devicePath, bool trusted)
+{
+    DBusMessage* msg = dbus_message_new_method_call(
+        BLUEZ_BUS, devicePath.c_str(), "org.freedesktop.DBus.Properties", "Set");
+    if (!msg)
+    {
+        return false;
+    }
+
+    DBusMessageIter iter, variant;
+    dbus_message_iter_init_append(msg, &iter);
+    const char* iface = DEVICE_IFACE;
+    const char* prop = "Trusted";
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &iface);
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &prop);
+    dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "b", &variant);
+    dbus_bool_t value = trusted ? TRUE : FALSE;
+    dbus_message_iter_append_basic(&variant, DBUS_TYPE_BOOLEAN, &value);
+    dbus_message_iter_close_container(&iter, &variant);
+
+    DBusMessage* reply = Call(msg, 2000);
+    if (reply)
+    {
+        dbus_message_unref(reply);
+        return true;
+    }
+    return false;
+}
+
 bool Client::GetBoolProperty(const std::string& path, const char* iface, const char* prop, bool& out)
 {
     DBusMessage* msg = dbus_message_new_method_call(

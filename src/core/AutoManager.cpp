@@ -118,14 +118,16 @@ void AutoManager::WakeManaged(CancellationToken& token)
             break;
         }
 
+        // Wake stations the moment discovery sees them (the callback runs on
+        // this thread) instead of waiting for the scan round to finish.
         auto stations = detector.ScanForBaseStations(
-            scanTimeoutSeconds, [&token] { return token.IsCancelled(); });
+            scanTimeoutSeconds, [&token] { return token.IsCancelled(); },
+            [this, &token](const std::vector<BaseStationInfo>& found)
+            { WakeStationsParallel(found, token); });
         for (const auto& station : stations)
         {
             everSeen.insert(station.address);
         }
-
-        WakeStationsParallel(stations, token);
 
         if (!everSeen.empty() && controllers.size() >= everSeen.size())
         {

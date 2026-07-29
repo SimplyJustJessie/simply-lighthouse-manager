@@ -52,6 +52,11 @@ public:
     bool ConnectDevice(const std::string& devicePath);     // AlreadyConnected == success
     bool DisconnectDevice(const std::string& devicePath);  // NotConnected == success
 
+    // Trusted devices persist in BlueZ's storage (untrusted ones are purged
+    // from the cache minutes after discovery), so trusting a station lets
+    // future runs connect to it instantly without a discovery scan.
+    bool SetDeviceTrusted(const std::string& devicePath, bool trusted);
+
     bool GetBoolProperty(const std::string& path, const char* iface, const char* prop, bool& out);
 
     DBusConnection* Raw() { return conn; }
