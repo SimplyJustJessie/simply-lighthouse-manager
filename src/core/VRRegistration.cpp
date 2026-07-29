@@ -3,10 +3,12 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <thread>
 
 namespace vrreg
 {
@@ -143,9 +145,36 @@ bool RegisterImpl(vr::IVRApplications* apps, bool setAutoLaunch, bool verbose,
         return false;
     }
 
+    // Newer SteamVR builds ingest AddApplicationManifest asynchronously
+    // (field report on 2.17.x: SetApplicationAutoLaunch immediately after a
+    // successful add fails with VRApplicationError_UnknownApplication). Wait
+    // until the app is actually queryable before proceeding.
+    bool installed = false;
+    for (int i = 0; i < 40 && !installed; i++)  // up to ~10s
+    {
+        installed = apps->IsApplicationInstalled(APP_KEY);
+        if (!installed)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+    }
+    if (!installed)
+    {
+        ReportError("SteamVR accepted the manifest but never listed the application - "
+                    "restart SteamVR and try again",
+                    verbose, error);
+        return false;
+    }
+
     if (setAutoLaunch)
     {
         vr::EVRApplicationError autoLaunchError = apps->SetApplicationAutoLaunch(APP_KEY, true);
+        if (autoLaunchError == vr::VRApplicationError_UnknownApplication)
+        {
+            // One settle-and-retry for stragglers.
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            autoLaunchError = apps->SetApplicationAutoLaunch(APP_KEY, true);
+        }
         if (autoLaunchError != vr::VRApplicationError_None)
         {
             ReportError(std::string("Registered, but enabling auto-start failed: ") +
@@ -153,17 +182,6 @@ bool RegisterImpl(vr::IVRApplications* apps, bool setAutoLaunch, bool verbose,
                         verbose, error);
             return false;
         }
-    }
-
-    // Do not trust the return codes alone - read the state back. A headless
-    // vrserver auto-spawned by VR_Init(Utility) has been seen accepting the
-    // manifest and then not persisting anything.
-    if (!apps->IsApplicationInstalled(APP_KEY))
-    {
-        ReportError("Registration did not persist - start SteamVR normally (from Steam) "
-                    "and try again",
-                    verbose, error);
-        return false;
     }
     if (setAutoLaunch && !apps->GetApplicationAutoLaunch(APP_KEY))
     {
