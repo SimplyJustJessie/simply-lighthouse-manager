@@ -1,6 +1,10 @@
 #include <openvr.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -291,6 +295,45 @@ int ManageAll()
     return 0;
 }
 
+// When SteamVR launches the service there is no terminal - divert output to
+// a log file so failures in the field are diagnosable.
+void RedirectOutputToLogFile()
+{
+    if (isatty(STDOUT_FILENO))
+    {
+        return;
+    }
+
+    const char* stateHome = std::getenv("XDG_STATE_HOME");
+    std::string dir;
+    if (stateHome && *stateHome)
+    {
+        dir = std::string(stateHome);
+    }
+    else
+    {
+        const char* home = std::getenv("HOME");
+        if (!home)
+        {
+            return;
+        }
+        dir = std::string(home) + "/.local/state";
+        mkdir(dir.c_str(), 0755);
+    }
+    dir += "/lighthouse-manager";
+    mkdir(dir.c_str(), 0755);
+
+    std::string logPath = dir + "/auto.log";
+    if (std::freopen(logPath.c_str(), "w", stdout))
+    {
+        setvbuf(stdout, nullptr, _IOLBF, 0);
+    }
+    if (std::freopen(logPath.c_str(), "a", stderr))
+    {
+        setvbuf(stderr, nullptr, _IOLBF, 0);
+    }
+}
+
 // Headless SteamVR-session service. Single-threaded OpenVR ownership: the
 // context is initialized once here and never touched from another thread.
 int AutoManage()
@@ -298,13 +341,19 @@ int AutoManage()
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
 
+    RedirectOutputToLogFile();
+
     // When launched by SteamVR the server is already up; when started
     // manually, wait for it.
+    // Overlay type, not Background: SteamVR only grants the quit-handshake
+    // grace period (AcknowledgeQuit_Exiting + cleanup time) to overlay apps;
+    // background apps can be killed before they can sleep the stations.
+    // Overlay init works headless - no overlay is ever drawn.
     std::unique_ptr<vrreg::ScopedVRSession> session;
     bool announcedWait = false;
     while (!g_signal)
     {
-        session = std::make_unique<vrreg::ScopedVRSession>(vr::VRApplication_Background);
+        session = std::make_unique<vrreg::ScopedVRSession>(vr::VRApplication_Overlay);
         if (session->Valid())
         {
             break;
