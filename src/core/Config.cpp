@@ -55,6 +55,7 @@ std::string Config::DefaultPath()
 bool Config::Load(const std::string& path)
 {
     manageMode = ManageMode::Selected;
+    powerOffMode = PowerOffMode::Sleep;
     stations.clear();
 
     std::ifstream file(path);
@@ -112,6 +113,11 @@ bool Config::Load(const std::string& path)
             {
                 manageMode = (value == "all") ? ManageMode::All : ManageMode::Selected;
             }
+            else if (key == "power_off_mode")
+            {
+                powerOffMode = (value == "standby") ? PowerOffMode::Standby
+                                                    : PowerOffMode::Sleep;
+            }
         }
         else if (section == "station" && !sectionArg.empty())
         {
@@ -161,6 +167,8 @@ bool Config::Save(const std::string& path) const
         file << "[general]\n";
         file << "manage_mode = " << (manageMode == ManageMode::Selected ? "selected" : "all")
              << "\n";
+        file << "power_off_mode = "
+             << (powerOffMode == PowerOffMode::Standby ? "standby" : "sleep") << "\n";
 
         for (const auto& [address, entry] : stations)
         {

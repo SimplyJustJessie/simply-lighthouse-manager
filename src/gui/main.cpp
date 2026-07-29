@@ -512,6 +512,19 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
         state.configDirty = true;
     }
 
+    bool useStandby = state.config.powerOffMode == Config::PowerOffMode::Standby;
+    if (ImGui::Checkbox("Standby instead of full sleep", &useStandby))
+    {
+        state.config.powerOffMode = useStandby ? Config::PowerOffMode::Standby
+                                               : Config::PowerOffMode::Sleep;
+        state.configDirty = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+    {
+        ImGui::SetTooltip("Standby keeps the radio alert: stations wake in ~1-2s\n"
+                          "instead of ~10s, at the cost of a little idle power.");
+    }
+
     ImGui::BeginDisabled(!state.configDirty);
     if (ImGui::Button("Save configuration"))
     {

@@ -11,6 +11,7 @@
 //
 //   [general]
 //   manage_mode = all            ; all | selected
+//   power_off_mode = sleep       ; sleep | standby (standby wakes much faster)
 //
 //   [station D4:1D:FE:B1:FE:E8]
 //   name = LHB-699A51BC          ; informational
@@ -27,6 +28,12 @@ public:
         Selected,  // manage only stations marked managed = true (default)
     };
 
+    enum class PowerOffMode
+    {
+        Sleep,    // full power-off; slow to wake (station advertises rarely)
+        Standby,  // motors off, radio alert; wakes near-instantly, uses more idle power
+    };
+
     struct StationEntry
     {
         std::string name;
@@ -36,6 +43,7 @@ public:
     // Auto-management is opt-in: until the user marks stations (or switches
     // to All mode), the auto service touches nothing.
     ManageMode manageMode = ManageMode::Selected;
+    PowerOffMode powerOffMode = PowerOffMode::Sleep;
     std::map<std::string, StationEntry> stations;  // keyed by MAC address
 
     static std::string DefaultPath();

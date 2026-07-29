@@ -201,7 +201,11 @@ void AutoManager::SleepManagedFast(std::chrono::milliseconds budget)
                 {
                     // Few retry rounds: this path runs inside SteamVR's
                     // shutdown grace period.
-                    if (controllers[i]->Sleep(2))
+                    BaseStationCommand cmd =
+                        config.powerOffMode == Config::PowerOffMode::Standby
+                            ? BaseStationCommand::Standby
+                            : BaseStationCommand::Sleep;
+                    if (controllers[i]->SendCommand(cmd, 2))
                     {
                         controllers[i]->Disconnect();
                         succeeded[i] = 1;
