@@ -21,7 +21,14 @@ Two binaries share one core:
 yay -S simply-lighthouse-manager
 ```
 
-(Replaces the older `openvr-lighthouse-manager-linux` package if installed.)
+**Migrating from `openvr-lighthouse-manager-linux`?** The old package's install helper created untracked symlinks in `/usr/bin`, which make pacman abort with a "conflicting files" error (`/usr/bin/lighthouse-manager exists in filesystem`). Remove them first:
+
+```bash
+sudo rm /usr/bin/lighthouse-manager /usr/bin/lighthouse-manager-gui
+rm -rf ~/.local/share/SteamVR/drivers/lighthouse-manager   # old install location
+```
+
+then install normally. The first `lighthouse-manager --register-manifest` (or the GUI's register button) re-points SteamVR at the new install automatically.
 
 ### From source
 
