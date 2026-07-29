@@ -73,7 +73,13 @@ void AutoManager::WakeStationsParallel(const std::vector<BaseStationInfo>& stati
             {
                 auto abort = [&token] { return token.IsCancelled(); };
                 auto controller = std::make_unique<BaseStationController>();
-                bool ok = controller->Connect(*target, abort) && controller->Wake(10, abort);
+                bool ok = controller->Connect(*target, abort);
+                if (ok)
+                {
+                    std::cout << "[auto] Connected to " << target->name
+                              << " - sending wake\n";
+                    ok = controller->Wake(10, abort);
+                }
                 if (ok)
                 {
                     std::cout << "[auto] Woke " << target->name << "\n";

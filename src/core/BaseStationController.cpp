@@ -109,6 +109,7 @@ bool BaseStationController::ConnectToDevice(const std::function<bool()>& shouldA
 
 bool BaseStationController::WaitForServicesResolved()
 {
+    auto start = std::chrono::steady_clock::now();
     const int maxWaitTicks = 50;  // 50 x 100ms = 5s
     for (int i = 0; i < maxWaitTicks; i++)
     {
@@ -116,10 +117,19 @@ bool BaseStationController::WaitForServicesResolved()
         if (client->GetBoolProperty(devicePath, "org.bluez.Device1", "ServicesResolved", resolved) &&
             resolved)
         {
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - start)
+                          .count();
+            if (ms > 1000)
+            {
+                std::cout << "Services resolved for " << stationInfo.address
+                          << " after " << ms << "ms\n";
+            }
             return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+    std::cerr << "Timed out waiting for services of " << stationInfo.address << "\n";
     return false;
 }
 
