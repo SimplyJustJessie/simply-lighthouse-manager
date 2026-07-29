@@ -295,6 +295,17 @@ void PostRegister(GuiState& state, WorkerQueue& worker, bool enable)
             std::string error;
             bool ok = enable ? vrreg::RegisterManifest(true, false, &error)
                              : vrreg::DisableAutoLaunch(false, &error);
+            if (!ok && !state.quitting)
+            {
+                // A freshly started vrserver process needs a few seconds
+                // before its applications subsystem accepts manifests
+                // (field report: InvalidManifest right after SteamVR
+                // launch, same call succeeding moments later).
+                state.SetStatus("Registration hiccup - retrying...", false);
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+                ok = enable ? vrreg::RegisterManifest(true, false, &error)
+                            : vrreg::DisableAutoLaunch(false, &error);
+            }
             if (ok)
             {
                 state.SetStatus(enable ? "Auto-start with SteamVR enabled"
