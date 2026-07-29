@@ -1,9 +1,9 @@
 // Lighthouse Manager GUI - manual base station control and auto-manage
 // configuration. Holds NO persistent OpenVR context; the SteamVR-session
 // lifecycle lives in the headless CLI service (`lighthouse-manager --auto`).
-// Background work runs on two joinable worker queues - one for Bluetooth,
-// one for every OpenVR session - so a long BLE scan never delays SteamVR
-// status. Shared state is only touched under GuiState::m or via atomics.
+// Background work runs on three joinable worker queues - scans, station
+// commands, and OpenVR sessions - so nothing queues behind a long scan.
+// Shared state is only touched under GuiState::m or via atomics.
 
 #define GL_SILENCE_DEPRECATION
 #include <GL/gl.h>
@@ -16,6 +16,7 @@
 #include <functional>
 #include <iostream>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -40,6 +41,7 @@ struct GuiState
     std::string statusMessage = "Ready";
     bool statusError = false;
     std::vector<BaseStationInfo> stations;
+    std::set<std::string> busyStations;  // addresses with an in-flight command
     vrreg::Status regStatus;
     bool regStatusKnown = false;
 
@@ -160,7 +162,13 @@ void PostScan(GuiState& state, WorkerQueue& worker)
             }
 
             auto stations = detector.ScanForBaseStations(
-                10, [&state] { return state.quitting.load(); });
+                10, [&state] { return state.quitting.load(); },
+                [&state](const std::vector<BaseStationInfo>& found)
+                {
+                    // Stream results into the table as they appear.
+                    std::lock_guard<std::mutex> lock(state.m);
+                    state.stations = found;
+                });
 
             {
                 std::lock_guard<std::mutex> lock(state.m);
@@ -198,11 +206,33 @@ void PostControl(GuiState& state, WorkerQueue& worker, const BaseStationInfo& st
             break;
     }
 
-    state.SetStatus("Queued " + commandName + " for " + station.name, false);
+    {
+        std::lock_guard<std::mutex> lock(state.m);
+        if (state.busyStations.count(station.address))
+        {
+            return;  // command already in flight for this station
+        }
+        state.busyStations.insert(station.address);
+        state.statusMessage = "Queued " + commandName + " for " + station.name;
+        state.statusError = false;
+    }
 
     worker.Post(
         [&state, station, command, commandName]()
         {
+            // Clears the per-station busy marker on every exit path,
+            // including exceptions (the worker catches those).
+            struct BusyGuard
+            {
+                GuiState& state;
+                const std::string& address;
+                ~BusyGuard()
+                {
+                    std::lock_guard<std::mutex> lock(state.m);
+                    state.busyStations.erase(address);
+                }
+            } busyGuard{state, station.address};
+
             state.SetStatus("Connecting to " + station.name + "...", false);
 
             BaseStationController controller;
@@ -298,7 +328,8 @@ void SaveConfig(GuiState& state)
     }
 }
 
-void BuildUI(GuiState& state, WorkerQueue& bleWorker, WorkerQueue& vrWorker)
+void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
+             WorkerQueue& vrWorker)
 {
     int windowWidth, windowHeight;
     glfwGetWindowSize(glfwWindow, &windowWidth, &windowHeight);
@@ -310,7 +341,6 @@ void BuildUI(GuiState& state, WorkerQueue& bleWorker, WorkerQueue& vrWorker)
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_MenuBar);
 
-    const bool bleBusy = bleWorker.Busy();
     const bool vrBusy = vrWorker.Busy();
     const bool scanning = state.scanning.load();
     const bool steamvrUp = state.steamvrRunning.load();
@@ -319,6 +349,7 @@ void BuildUI(GuiState& state, WorkerQueue& bleWorker, WorkerQueue& vrWorker)
     std::string statusMessage;
     bool statusError;
     std::vector<BaseStationInfo> stations;
+    std::set<std::string> busyStations;
     vrreg::Status regStatus;
     bool regStatusKnown;
     {
@@ -326,6 +357,7 @@ void BuildUI(GuiState& state, WorkerQueue& bleWorker, WorkerQueue& vrWorker)
         statusMessage = state.statusMessage;
         statusError = state.statusError;
         stations = state.stations;
+        busyStations = state.busyStations;
         regStatus = state.regStatus;
         regStatusKnown = state.regStatusKnown;
     }
@@ -336,7 +368,7 @@ void BuildUI(GuiState& state, WorkerQueue& bleWorker, WorkerQueue& vrWorker)
         {
             if (ImGui::MenuItem("Scan for Base Stations", nullptr, false, !scanning))
             {
-                PostScan(state, bleWorker);
+                PostScan(state, scanWorker);
             }
             if (ImGui::MenuItem("Exit", "Esc"))
             {
@@ -364,7 +396,7 @@ void BuildUI(GuiState& state, WorkerQueue& bleWorker, WorkerQueue& vrWorker)
     ImGui::BeginDisabled(scanning);
     if (ImGui::Button("Scan for Base Stations", ImVec2(-1, 0)))
     {
-        PostScan(state, bleWorker);
+        PostScan(state, scanWorker);
     }
     ImGui::EndDisabled();
 
@@ -442,20 +474,20 @@ void BuildUI(GuiState& state, WorkerQueue& bleWorker, WorkerQueue& vrWorker)
                 }
 
                 ImGui::TableNextColumn();
-                ImGui::BeginDisabled(bleBusy);
+                ImGui::BeginDisabled(busyStations.count(station.address) > 0);
                 if (ImGui::SmallButton("Wake"))
                 {
-                    PostControl(state, bleWorker, station, BaseStationCommand::Wake);
+                    PostControl(state, cmdWorker, station, BaseStationCommand::Wake);
                 }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Sleep"))
                 {
-                    PostControl(state, bleWorker, station, BaseStationCommand::Sleep);
+                    PostControl(state, cmdWorker, station, BaseStationCommand::Sleep);
                 }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Standby"))
                 {
-                    PostControl(state, bleWorker, station, BaseStationCommand::Standby);
+                    PostControl(state, cmdWorker, station, BaseStationCommand::Standby);
                 }
                 ImGui::EndDisabled();
 
@@ -668,17 +700,19 @@ int main(int, char**)
 
     // Declaration order matters: the workers' destructors join their threads
     // before state is destroyed, so jobs can safely capture &state.
-    // Bluetooth and OpenVR work run on separate queues so a long BLE scan
-    // never delays SteamVR status/registration (each domain still serializes
-    // within its own queue; every OpenVR session lives on vrWorker only).
+    // Scans, station commands, and OpenVR work run on separate queues so
+    // nothing waits behind a long scan (each domain still serializes within
+    // its own queue; per-station dedup happens via GuiState::busyStations;
+    // every OpenVR session lives on vrWorker only).
     GuiState state;
     state.config.Load();
     {
-        WorkerQueue bleWorker(state);
+        WorkerQueue scanWorker(state);
+        WorkerQueue cmdWorker(state);
         WorkerQueue vrWorker(state);
 
         state.steamvrRunning = SteamVRWatcher::IsVrServerProcessRunning();
-        PostScan(state, bleWorker);
+        PostScan(state, scanWorker);
         PostRegistrationCheck(state, vrWorker);
 
         auto lastSteamVRCheck = std::chrono::steady_clock::now();
@@ -703,7 +737,7 @@ int main(int, char**)
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
 
-            BuildUI(state, bleWorker, vrWorker);
+            BuildUI(state, scanWorker, cmdWorker, vrWorker);
 
             ImGui::Render();
 

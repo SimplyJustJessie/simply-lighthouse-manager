@@ -115,7 +115,8 @@ std::vector<BaseStationInfo> BaseStationDetector::ListKnownStations()
 }
 
 std::vector<BaseStationInfo> BaseStationDetector::ScanForBaseStations(
-    int timeoutSeconds, const std::function<bool()>& shouldCancel)
+    int timeoutSeconds, const std::function<bool()>& shouldCancel,
+    const std::function<void(const std::vector<BaseStationInfo>&)>& onProgress)
 {
     std::vector<BaseStationInfo> stations;
 
@@ -127,6 +128,10 @@ std::vector<BaseStationInfo> BaseStationDetector::ScanForBaseStations(
 
     // Stations BlueZ already knows about (paired or recently seen).
     CollectStations(stations);
+    if (onProgress)
+    {
+        onProgress(stations);
+    }
 
     // Live LE discovery to pick up stations that are advertising.
     bluez::DiscoveryGuard discovery(*client, adapterPath);
@@ -145,7 +150,12 @@ std::vector<BaseStationInfo> BaseStationDetector::ScanForBaseStations(
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        size_t before = stations.size();
         CollectStations(stations);
+        if (onProgress && stations.size() != before)
+        {
+            onProgress(stations);
+        }
     }
 
     return stations;

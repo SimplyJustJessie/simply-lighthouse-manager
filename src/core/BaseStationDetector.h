@@ -35,9 +35,12 @@ public:
     // Lists base stations BlueZ already knows, then runs an LE discovery for
     // up to timeoutSeconds picking up stations as they advertise. A provided
     // shouldCancel callback is checked about once a second and ends the scan
-    // early (returning what was found so far).
+    // early (returning what was found so far). onProgress, when provided, is
+    // invoked with the stations found so far - immediately after the known
+    // devices are listed and again after each discovery tick.
     std::vector<BaseStationInfo> ScanForBaseStations(
-        int timeoutSeconds = 10, const std::function<bool()>& shouldCancel = {});
+        int timeoutSeconds = 10, const std::function<bool()>& shouldCancel = {},
+        const std::function<void(const std::vector<BaseStationInfo>&)>& onProgress = {});
 
     // Stations BlueZ already knows (paired or previously seen) - instant, no
     // radio discovery.
