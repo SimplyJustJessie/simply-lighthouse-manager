@@ -1,12 +1,17 @@
+#include <fcntl.h>
 #include <openvr.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -295,6 +300,46 @@ int ManageAll()
     return 0;
 }
 
+// Streambuf that prefixes every line with a wall-clock timestamp and flushes
+// on newline - shared by cout and cerr when logging to a file.
+class TimestampLogBuf : public std::streambuf
+{
+public:
+    explicit TimestampLogBuf(FILE* file) : file(file) {}
+
+protected:
+    int overflow(int c) override
+    {
+        if (c == EOF)
+        {
+            return 0;
+        }
+        std::lock_guard<std::mutex> lock(m);  // cout/cerr are used from two threads
+        if (atLineStart)
+        {
+            time_t now = time(nullptr);
+            struct tm tmBuf;
+            localtime_r(&now, &tmBuf);
+            char stamp[32];
+            strftime(stamp, sizeof(stamp), "[%H:%M:%S] ", &tmBuf);
+            fputs(stamp, file);
+            atLineStart = false;
+        }
+        fputc(c, file);
+        if (c == '\n')
+        {
+            atLineStart = true;
+            fflush(file);
+        }
+        return c;
+    }
+
+private:
+    FILE* file;
+    std::mutex m;
+    bool atLineStart = true;
+};
+
 // When SteamVR launches the service there is no terminal - divert output to
 // a log file so failures in the field are diagnosable.
 void RedirectOutputToLogFile()
@@ -324,14 +369,48 @@ void RedirectOutputToLogFile()
     mkdir(dir.c_str(), 0755);
 
     std::string logPath = dir + "/auto.log";
-    if (std::freopen(logPath.c_str(), "w", stdout))
+    FILE* logFile = std::fopen(logPath.c_str(), "w");
+    if (!logFile)
     {
-        setvbuf(stdout, nullptr, _IOLBF, 0);
+        return;
     }
-    if (std::freopen(logPath.c_str(), "a", stderr))
+    // Leaked deliberately: must outlive every user of cout/cerr.
+    static TimestampLogBuf* logBuf = nullptr;
+    logBuf = new TimestampLogBuf(logFile);
+    std::cout.rdbuf(logBuf);
+    std::cerr.rdbuf(logBuf);
+}
+
+// Two concurrent services fight: their disconnects drop each other's BLE
+// links, and one instance's keep-alive re-wakes stations the other just put
+// to sleep. Take an exclusive per-user lock; the fd stays open (and the lock
+// held) for the process lifetime.
+bool AcquireSingleInstanceLock()
+{
+    const char* runtimeDir = std::getenv("XDG_RUNTIME_DIR");
+    std::string dir;
+    if (runtimeDir && *runtimeDir)
     {
-        setvbuf(stderr, nullptr, _IOLBF, 0);
+        dir = runtimeDir;
     }
+    else
+    {
+        const char* home = std::getenv("HOME");
+        dir = std::string(home ? home : "/tmp");
+    }
+    std::string lockPath = dir + "/lighthouse-manager-auto.lock";
+
+    int fd = open(lockPath.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
+    if (fd < 0)
+    {
+        return true;  // cannot lock - do not block the service over it
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0)
+    {
+        close(fd);
+        return false;
+    }
+    return true;  // fd intentionally kept open until process exit
 }
 
 // Headless SteamVR-session service. Single-threaded OpenVR ownership: the
@@ -341,6 +420,14 @@ int AutoManage()
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
 
+    if (!AcquireSingleInstanceLock())
+    {
+        // Deliberately before the log redirect so the losing instance does
+        // not truncate the running instance's log file.
+        std::cerr << "[auto] Another auto service instance is already running - exiting\n";
+        return 0;
+    }
+
     RedirectOutputToLogFile();
 
     // When launched by SteamVR the server is already up; when started
@@ -348,17 +435,22 @@ int AutoManage()
     // Overlay type, not Background: SteamVR only grants the quit-handshake
     // grace period (AcknowledgeQuit_Exiting + cleanup time) to overlay apps;
     // background apps can be killed before they can sleep the stations.
-    // Overlay init works headless - no overlay is ever drawn.
+    // Overlay init works headless - no overlay is ever drawn. It DOES
+    // auto-start SteamVR though, so only attempt it once vrserver is
+    // already up.
     std::unique_ptr<vrreg::ScopedVRSession> session;
     bool announcedWait = false;
     while (!g_signal)
     {
-        session = std::make_unique<vrreg::ScopedVRSession>(vr::VRApplication_Overlay);
-        if (session->Valid())
+        if (SteamVRWatcher::IsVrServerProcessRunning())
         {
-            break;
+            session = std::make_unique<vrreg::ScopedVRSession>(vr::VRApplication_Overlay);
+            if (session->Valid())
+            {
+                break;
+            }
+            session.reset();
         }
-        session.reset();
         if (!announcedWait)
         {
             std::cout << "[auto] Waiting for SteamVR to start...\n";
@@ -390,14 +482,25 @@ int AutoManage()
     CancellationToken token;
     SteamVRWatcher watcher(session->System());
 
-    manager.WakeManaged(token);
-    std::cout << "[auto] Managing " << manager.ManagedCount() << " base station(s)\n";
-    if (manager.ManagedCount() == 0)
+    // The wake phase (BLE connects, possibly discovery scans) can take tens
+    // of seconds; it runs on its own thread so this loop keeps polling for
+    // SteamVR's quit event the whole time. Nothing else touches `manager`
+    // until the wake thread is joined.
+    std::atomic<bool> wakeDone{false};
+    std::thread wakeThread(
+        [&manager, &token, &wakeDone]()
+        {
+            manager.WakeManaged(token);
+            wakeDone = true;
+        });
+    bool wakeJoined = false;
+    auto JoinWake = [&]()
     {
-        std::cout << "[auto] Auto-management is opt-in: mark stations with\n"
-                     "[auto]   lighthouse-manager --manage <id>\n"
-                     "[auto] or the GUI's Auto checkboxes.\n";
-    }
+        if (wakeThread.joinable())
+        {
+            wakeThread.join();
+        }
+    };
 
     enum class ExitReason
     {
@@ -432,6 +535,26 @@ int AutoManage()
                 continue;
             case SteamVRWatcher::Status::Running:
                 break;
+        }
+
+        if (!wakeJoined)
+        {
+            if (!wakeDone)
+            {
+                // Keep-alives and config reloads wait until the wake phase
+                // hands the manager over.
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                continue;
+            }
+            JoinWake();
+            wakeJoined = true;
+            std::cout << "[auto] Managing " << manager.ManagedCount() << " base station(s)\n";
+            if (manager.ManagedCount() == 0)
+            {
+                std::cout << "[auto] Auto-management is opt-in: mark stations with\n"
+                             "[auto]   lighthouse-manager --manage <id>\n"
+                             "[auto] or the GUI's Auto checkboxes.\n";
+            }
         }
 
         auto now = std::chrono::steady_clock::now();
@@ -492,9 +615,11 @@ int AutoManage()
             break;
     }
 
-    // Release the OpenVR IPC before the (bounded) BLE cleanup.
+    // Release the OpenVR IPC before the (bounded) BLE cleanup. The wake
+    // thread must be stopped and joined before the manager sleeps stations.
     session->Shutdown();
     token.Cancel();
+    JoinWake();
     manager.SleepManagedFast(std::chrono::milliseconds(4000));
     std::cout << "[auto] Done\n";
     return 0;

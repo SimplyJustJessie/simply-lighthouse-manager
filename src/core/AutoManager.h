@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <vector>
 
 #include "BaseStationController.h"
@@ -61,6 +62,7 @@ private:
     BaseStationDetector& detector;
     Config config;
     std::vector<std::unique_ptr<BaseStationController>> controllers;
+    std::set<std::string> warnedExcluded;  // skip-message dedup
 
     // Connect+wake the given stations concurrently (one thread each) and
     // adopt the successful controllers. Skips unmanaged/already-managed ones.

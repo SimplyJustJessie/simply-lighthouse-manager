@@ -44,7 +44,10 @@ void AutoManager::WakeStationsParallel(const std::vector<BaseStationInfo>& stati
         }
         if (!config.IsManaged(station))
         {
-            std::cout << "[auto] Skipping " << station.name << " (excluded by config)\n";
+            if (warnedExcluded.insert(station.address).second)
+            {
+                std::cout << "[auto] Skipping " << station.name << " (excluded by config)\n";
+            }
             continue;
         }
         targets.push_back(&station);
@@ -109,7 +112,7 @@ void AutoManager::WakeManaged(CancellationToken& token)
 
     const int maxRetries = 3;
     const int scanTimeoutSeconds = 15;
-    std::set<std::string> everSeen;
+    std::set<std::string> managedSeen;
 
     for (int retry = 0; retry < maxRetries && !token.IsCancelled(); retry++)
     {
@@ -126,12 +129,33 @@ void AutoManager::WakeManaged(CancellationToken& token)
             { WakeStationsParallel(found, token); });
         for (const auto& station : stations)
         {
-            everSeen.insert(station.address);
+            if (config.IsManaged(station))
+            {
+                managedSeen.insert(station.address);
+            }
         }
 
-        if (!everSeen.empty() && controllers.size() >= everSeen.size())
+        // Only stations we would actually manage count toward "done" -
+        // excluded ones must not keep the retry loop alive.
+        if (!managedSeen.empty() && controllers.size() >= managedSeen.size())
         {
-            break;  // everything discovered so far is awake
+            break;
+        }
+        if (config.manageMode != Config::ManageMode::All)
+        {
+            bool stillMissing = false;
+            for (const auto& [address, entry] : config.stations)
+            {
+                if (entry.managed && !IsManaging(address))
+                {
+                    stillMissing = true;
+                    break;
+                }
+            }
+            if (!stillMissing)
+            {
+                break;
+            }
         }
     }
 }

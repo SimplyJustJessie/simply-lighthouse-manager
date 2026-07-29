@@ -334,7 +334,9 @@ void Client::StopDiscovery(const std::string& adapterPath)
 
 bool Client::ConnectDevice(const std::string& devicePath)
 {
-    return CallSimple(devicePath.c_str(), DEVICE_IFACE, "Connect", 10000,
+    // A connect to an advertising station normally completes in 1-3s; a
+    // shorter timeout cycles hung attempts faster instead of stalling 10s.
+    return CallSimple(devicePath.c_str(), DEVICE_IFACE, "Connect", 6000,
                       "org.bluez.Error.AlreadyConnected");
 }
 
