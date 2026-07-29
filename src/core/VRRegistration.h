@@ -70,6 +70,12 @@ struct Status
 // Directory containing the running executable (resolved via /proc/self/exe).
 std::string ExecutableDir();
 
+// Path of the manifest we register: generated (with an absolute binary
+// path) under ~/.config/lighthouse-manager/ at registration time. Newer
+// SteamVR builds reject relative binary paths as InvalidManifest, and a
+// user-writable location works for every install prefix.
+std::string ManifestPath();
+
 // Registers <exe dir>/manifest.vrmanifest with SteamVR. If a registration
 // already exists but points somewhere else (e.g. a pre-1.1 install under
 // ~/.local/share/SteamVR/drivers/), it is replaced so upgrades self-heal.

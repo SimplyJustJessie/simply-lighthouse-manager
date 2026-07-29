@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(LighthouseManager VERSION 1.1.0 LANGUAGES CXX)
+project(LighthouseManager VERSION 1.1.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,9 +17,6 @@ include(GNUInstallDirs)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-# SteamVR registration resolves manifest.vrmanifest next to the executable,
-# so build-tree runs need a copy in bin/ just like installed runs have.
-configure_file(manifest.vrmanifest ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/manifest.vrmanifest COPYONLY)
 
 add_compile_options(-Wall -Wextra)
 if(LIGHTHOUSE_SANITIZE)
@@ -159,7 +156,7 @@ target_link_libraries(lighthouse-manager-gui PRIVATE lighthouse_core imgui)
 
 # ---------------------------------------------------------------------------
 # Install layout (consumed by packaging/PKGBUILD and scripts/install.sh):
-#   <libdir>/simply-lighthouse-manager/  binaries + manifest (+ bundled .so)
+#   <libdir>/simply-lighthouse-manager/  binaries (+ bundled .so)
 #   <bindir>/                                  relative symlinks to the binaries
 # Binaries carry an $ORIGIN-only rpath so a bundled libopenvr_api.so is found
 # regardless of install prefix; no absolute build paths leak into the binary.
@@ -172,7 +169,6 @@ set_target_properties(lighthouse-manager lighthouse-manager-gui PROPERTIES
 
 install(TARGETS lighthouse-manager lighthouse-manager-gui
     RUNTIME DESTINATION "${LIGHTHOUSE_INSTALL_DIR}")
-install(FILES manifest.vrmanifest DESTINATION "${LIGHTHOUSE_INSTALL_DIR}")
 
 if(LIGHTHOUSE_BUNDLE_OPENVR)
     get_filename_component(_openvr_library_real "${_openvr_library}" REALPATH)

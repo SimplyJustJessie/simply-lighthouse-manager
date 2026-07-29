@@ -1,6 +1,7 @@
 #include "VRRegistration.h"
 
 #include <limits.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <cstdlib>
 #include <fstream>
@@ -25,6 +26,66 @@ void ReportError(const std::string& message, bool verbose, std::string* error)
     }
 }
 
+std::string ManifestDir()
+{
+    const char* xdg = std::getenv("XDG_CONFIG_HOME");
+    std::string dir;
+    if (xdg && *xdg)
+    {
+        dir = xdg;
+    }
+    else
+    {
+        const char* home = std::getenv("HOME");
+        dir = std::string(home ? home : ".") + "/.config";
+    }
+    return dir + "/lighthouse-manager";
+}
+
+// Writes the manifest we register, with an ABSOLUTE binary path: newer
+// SteamVR builds (seen on 2.17.x) reject manifests whose binary_path_linux
+// is relative with VRApplicationError_InvalidManifest, while older builds
+// (2.12.x) accept them. Generating at registration time also keeps the path
+// correct for any install location (AUR /usr/lib, ~/.local, dev tree) and
+// avoids registering files under read-only system paths.
+bool WriteManifestFile(const std::string& manifestPath, const std::string& exeDir,
+                       bool verbose, std::string* error)
+{
+    mkdir(ManifestDir().c_str(), 0755);
+
+    std::ofstream file(manifestPath, std::ios::trunc);
+    if (!file.is_open())
+    {
+        ReportError("Cannot write " + manifestPath, verbose, error);
+        return false;
+    }
+
+    file << "{\n"
+         << "\t\"source\": \"builtin\",\n"
+         << "\t\"applications\": [{\n"
+         << "\t\t\"app_key\": \"" << APP_KEY << "\",\n"
+         << "\t\t\"launch_type\": \"binary\",\n"
+         << "\t\t\"binary_path_linux\": \"" << exeDir << "/lighthouse-manager\",\n"
+         << "\t\t\"arguments\": \"--auto\",\n"
+         << "\t\t\"is_dashboard_overlay\": true,\n"
+         << "\t\t\"strings\": {\n"
+         << "\t\t\t\"en_us\": {\n"
+         << "\t\t\t\t\"name\": \"Lighthouse Manager\",\n"
+         << "\t\t\t\t\"description\": \"Base Station Power Management\"\n"
+         << "\t\t\t}\n"
+         << "\t\t}\n"
+         << "\t}]\n"
+         << "}\n";
+
+    file.flush();
+    if (!file.good())
+    {
+        ReportError("Failed writing " + manifestPath, verbose, error);
+        return false;
+    }
+    return true;
+}
+
 // The registration work itself, given a live VRApplications interface.
 bool RegisterImpl(vr::IVRApplications* apps, bool setAutoLaunch, bool verbose,
                   std::string* error)
@@ -35,10 +96,9 @@ bool RegisterImpl(vr::IVRApplications* apps, bool setAutoLaunch, bool verbose,
         ReportError("Failed to determine executable path", verbose, error);
         return false;
     }
-    const std::string manifestPath = exeDir + "/manifest.vrmanifest";
-    if (access(manifestPath.c_str(), R_OK) != 0)
+    const std::string manifestPath = ManifestPath();
+    if (!WriteManifestFile(manifestPath, exeDir, verbose, error))
     {
-        ReportError("Manifest not found: " + manifestPath, verbose, error);
         return false;
     }
 
@@ -58,7 +118,7 @@ bool RegisterImpl(vr::IVRApplications* apps, bool setAutoLaunch, bool verbose,
                                            workingDir, sizeof(workingDir), &propError);
         if (propError == vr::VRApplicationError_None && workingDir[0] != '\0')
         {
-            if (verbose && exeDir != workingDir)
+            if (verbose && ManifestDir() != workingDir)
             {
                 std::cout << "Removing old registration of " << key
                           << " (was: " << workingDir << ")\n";
@@ -121,6 +181,11 @@ bool RegisterImpl(vr::IVRApplications* apps, bool setAutoLaunch, bool verbose,
 }
 
 }  // namespace
+
+std::string ManifestPath()
+{
+    return ManifestDir() + "/manifest.vrmanifest";
+}
 
 std::string ExecutableDir()
 {
@@ -231,7 +296,7 @@ bool VerifyPersistedOnDisk(bool expectAutoLaunch, std::string* detail)
         return true;  // no Steam config found to verify against
     }
 
-    const std::string manifestPath = ExecutableDir() + "/manifest.vrmanifest";
+    const std::string manifestPath = ManifestPath();
 
     std::ifstream appconfig(configDir + "/appconfig.json");
     std::string contents((std::istreambuf_iterator<char>(appconfig)),
