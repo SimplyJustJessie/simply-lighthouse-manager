@@ -336,8 +336,22 @@ bool Client::ConnectDevice(const std::string& devicePath)
 {
     // A connect to an advertising station normally completes in 1-3s; a
     // shorter timeout cycles hung attempts faster instead of stalling 10s.
-    return CallSimple(devicePath.c_str(), DEVICE_IFACE, "Connect", 6000,
-                      "org.bluez.Error.AlreadyConnected");
+    DBusMessage* msg = dbus_message_new_method_call(
+        BLUEZ_BUS, devicePath.c_str(), DEVICE_IFACE, "Connect");
+    std::string errorName;
+    DBusMessage* reply = Call(msg, 6000, &errorName);
+    if (reply)
+    {
+        dbus_message_unref(reply);
+        return true;
+    }
+    if (errorName == "org.bluez.Error.AlreadyConnected")
+    {
+        return true;
+    }
+    std::cerr << "Connect failed for " << devicePath << ": "
+              << (errorName.empty() ? "timeout/no reply" : errorName) << "\n";
+    return false;
 }
 
 bool Client::DisconnectDevice(const std::string& devicePath)
