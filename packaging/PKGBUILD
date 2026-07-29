@@ -18,7 +18,7 @@ _openvrver=2.5.1
 # _openvrver is bumped.
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz"
         "openvr-${_openvrver}.tar.gz::https://github.com/ValveSoftware/openvr/archive/refs/tags/v${_openvrver}.tar.gz")
-sha256sums=('SKIP'
+sha256sums=('fd344ee529e8a3871171b7f1f3e9a9b816205014825e6e4d43de5d1a47b8cfde'
             '54f654fce001682d8ac608f544a6c41e03a672b005c1deca3579fa36480a537c')
 
 build() {
