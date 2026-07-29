@@ -5,6 +5,8 @@
 #include <set>
 #include <thread>
 
+#include "BlueZClient.h"
+
 void CancellationToken::Cancel()
 {
     {
@@ -102,6 +104,9 @@ void AutoManager::WakeStationsParallel(const std::vector<BaseStationInfo>& stati
 void AutoManager::WakeManaged(CancellationToken& token)
 {
     // Fast path: stations BlueZ already knows wake immediately, in parallel.
+    // Discovery stays active throughout so connects can fire on the next
+    // advertisement instead of each waiting out the advertising interval.
+    auto discovery = detector.HoldDiscovery();
     WakeStationsParallel(detector.ListKnownStations(), token);
     if (token.IsCancelled())
     {

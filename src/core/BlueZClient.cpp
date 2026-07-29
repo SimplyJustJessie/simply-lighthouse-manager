@@ -1,6 +1,7 @@
 #include "BlueZClient.h"
 
 #include <dbus/dbus.h>
+#include <chrono>
 #include <cstring>
 #include <iostream>
 
@@ -357,9 +358,10 @@ bool Client::ConnectDevice(const std::string& devicePath,
     }
     dbus_message_unref(msg);
 
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(35);
     while (!dbus_pending_call_get_completed(pending))
     {
-        if (shouldAbort && shouldAbort())
+        if ((shouldAbort && shouldAbort()) || std::chrono::steady_clock::now() >= deadline)
         {
             dbus_pending_call_cancel(pending);
             dbus_pending_call_unref(pending);

@@ -103,6 +103,16 @@ void BaseStationDetector::CollectStations(std::vector<BaseStationInfo>& stations
     }
 }
 
+std::unique_ptr<bluez::DiscoveryGuard> BaseStationDetector::HoldDiscovery()
+{
+    if (!initialized && !Initialize())
+    {
+        return nullptr;
+    }
+    auto guard = std::make_unique<bluez::DiscoveryGuard>(*client, adapterPath);
+    return guard->Active() ? std::move(guard) : nullptr;
+}
+
 std::vector<BaseStationInfo> BaseStationDetector::ListKnownStations()
 {
     std::vector<BaseStationInfo> stations;

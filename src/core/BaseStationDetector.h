@@ -21,6 +21,7 @@ struct BaseStationInfo
 namespace bluez
 {
 class Client;
+class DiscoveryGuard;
 }
 
 class BaseStationDetector
@@ -45,6 +46,12 @@ public:
     // Stations BlueZ already knows (paired or previously seen) - instant, no
     // radio discovery.
     std::vector<BaseStationInfo> ListKnownStations();
+
+    // Keeps LE discovery running while the returned guard is alive. With a
+    // scan active, bluetoothd hears every advertisement immediately and
+    // queued connects fire as soon as their device advertises, instead of
+    // each connect waiting out the device's advertising interval on its own.
+    std::unique_ptr<bluez::DiscoveryGuard> HoldDiscovery();
 
     bool IsBluetoothAvailable() const;
 
