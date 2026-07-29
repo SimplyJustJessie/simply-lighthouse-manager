@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -24,14 +25,18 @@ public:
     BaseStationController();
     ~BaseStationController();
 
-    bool Connect(const BaseStationInfo& station);
+    // shouldAbort, when provided, is checked between retry attempts and ends
+    // the operation early (reported as failure) - used so a SteamVR quit
+    // during the wake phase does not stall shutdown on a slow station.
+    bool Connect(const BaseStationInfo& station, const std::function<bool()>& shouldAbort = {});
     void Disconnect();
 
     // retryRounds bounds the outer retry loop; the default favors
     // reliability, exit paths pass a small value to stay within SteamVR's
     // shutdown grace period.
-    bool SendCommand(BaseStationCommand command, int retryRounds = 10);
-    bool Wake();
+    bool SendCommand(BaseStationCommand command, int retryRounds = 10,
+                     const std::function<bool()>& shouldAbort = {});
+    bool Wake(int retryRounds = 10, const std::function<bool()>& shouldAbort = {});
     bool Sleep(int retryRounds = 10);
     bool Standby();
     bool SendWakePacket();
@@ -50,7 +55,7 @@ private:
     std::unique_ptr<bluez::Client> client;
 
     bool EnsureConnection();
-    bool ConnectToDevice();
+    bool ConnectToDevice(const std::function<bool()>& shouldAbort = {});
     bool WaitForServicesResolved();
     std::string FindServicePath(const std::string& serviceUuid);
     std::string FindCharacteristicPath(const std::string& servicePath, const std::string& charUuid);

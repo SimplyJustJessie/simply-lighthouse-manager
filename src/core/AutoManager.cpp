@@ -62,10 +62,11 @@ void AutoManager::WakeStationsParallel(const std::vector<BaseStationInfo>& stati
     for (const BaseStationInfo* target : targets)
     {
         workers.emplace_back(
-            [this, target, &adoptMutex]()
+            [this, target, &adoptMutex, &token]()
             {
+                auto abort = [&token] { return token.IsCancelled(); };
                 auto controller = std::make_unique<BaseStationController>();
-                if (controller->Connect(*target) && controller->Wake())
+                if (controller->Connect(*target, abort) && controller->Wake(10, abort))
                 {
                     std::cout << "[auto] Woke " << target->name << "\n";
                     std::lock_guard<std::mutex> lock(adoptMutex);

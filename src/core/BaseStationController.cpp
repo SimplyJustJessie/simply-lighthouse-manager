@@ -33,7 +33,8 @@ BaseStationController::~BaseStationController()
     Disconnect();
 }
 
-bool BaseStationController::Connect(const BaseStationInfo& station)
+bool BaseStationController::Connect(const BaseStationInfo& station,
+                                    const std::function<bool()>& shouldAbort)
 {
     stationInfo = station;
 
@@ -57,7 +58,7 @@ bool BaseStationController::Connect(const BaseStationInfo& station)
         return false;
     }
 
-    connected = ConnectToDevice();
+    connected = ConnectToDevice(shouldAbort);
     if (connected)
     {
         // Keep the station in BlueZ's persistent storage so future runs can
@@ -76,11 +77,15 @@ void BaseStationController::Disconnect()
     connected = false;
 }
 
-bool BaseStationController::ConnectToDevice()
+bool BaseStationController::ConnectToDevice(const std::function<bool()>& shouldAbort)
 {
     const int retryCount = 3;
     for (int i = 0; i < retryCount; i++)
     {
+        if (shouldAbort && shouldAbort())
+        {
+            return false;
+        }
         if (i > 0)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -279,7 +284,8 @@ bool BaseStationController::EnsureConnection()
     return connected;
 }
 
-bool BaseStationController::SendCommand(BaseStationCommand command, int retryRounds)
+bool BaseStationController::SendCommand(BaseStationCommand command, int retryRounds,
+                                        const std::function<bool()>& shouldAbort)
 {
     uint8_t value = static_cast<uint8_t>(command);
 
@@ -297,6 +303,10 @@ bool BaseStationController::SendCommand(BaseStationCommand command, int retryRou
 
     for (int i = 0; i < retryCount; i++)
     {
+        if (shouldAbort && shouldAbort())
+        {
+            return false;
+        }
         if (i > 0)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -325,9 +335,9 @@ bool BaseStationController::SendCommand(BaseStationCommand command, int retryRou
     return success;
 }
 
-bool BaseStationController::Wake()
+bool BaseStationController::Wake(int retryRounds, const std::function<bool()>& shouldAbort)
 {
-    return SendCommand(BaseStationCommand::Wake);
+    return SendCommand(BaseStationCommand::Wake, retryRounds, shouldAbort);
 }
 
 bool BaseStationController::Sleep(int retryRounds)
