@@ -38,12 +38,9 @@ To uninstall a from-source install: `./scripts/uninstall.sh`.
 
 ## Setting up auto-management
 
-Auto-management is **off by default** - the service manages nothing until you opt stations in.
+Auto-management is **off by default** - the service manages nothing until you opt stations in. The whole setup can be done from the GUI:
 
-1. Enable auto-start, **once, while SteamVR is running**:
-   ```bash
-   lighthouse-manager --register-manifest
-   ```
+1. Start SteamVR, open `lighthouse-manager-gui`, and click **Register with SteamVR (enable auto-start)** - the button appears automatically when the app is not registered yet. (CLI alternative: `lighthouse-manager --register-manifest` while SteamVR is running.)
 2. Choose the stations to manage:
    - **GUI**: tick the station's "Auto" checkbox and press *Save configuration*, or
    - **CLI**:
@@ -53,6 +50,8 @@ Auto-management is **off by default** - the service manages nothing until you op
      lighthouse-manager --unmanage LHB-XXXXXXXX  # exclude again
      lighthouse-manager --list-managed           # show config
      ```
+
+Auto-start can be toggled off and on again at any time from the same GUI section (or `--disable-autolaunch`).
 
 From then on SteamVR starts and stops the service automatically; updates apply in place without re-registration. Settings live in `~/.config/lighthouse-manager/config.ini`, and a running service picks up changes within ~15 seconds.
 
