@@ -50,6 +50,12 @@ void AutoManager::WakeStationsParallel(const std::vector<BaseStationInfo>& stati
             }
             continue;
         }
+        auto attempt = lastWakeAttempt.find(station.address);
+        if (attempt != lastWakeAttempt.end() &&
+            std::chrono::steady_clock::now() - attempt->second < std::chrono::seconds(5))
+        {
+            continue;  // just failed - let the adapter settle first
+        }
         targets.push_back(&station);
     }
     if (targets.empty() || token.IsCancelled())
@@ -61,6 +67,7 @@ void AutoManager::WakeStationsParallel(const std::vector<BaseStationInfo>& stati
     std::vector<std::thread> workers;
     for (const BaseStationInfo* target : targets)
     {
+        lastWakeAttempt[target->address] = std::chrono::steady_clock::now();
         workers.emplace_back(
             [this, target, &adoptMutex, &token]()
             {

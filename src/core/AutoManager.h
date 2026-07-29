@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -63,6 +64,10 @@ private:
     Config config;
     std::vector<std::unique_ptr<BaseStationController>> controllers;
     std::set<std::string> warnedExcluded;  // skip-message dedup
+    // Last wake attempt per address: a station that just failed gets a short
+    // cooldown before the next try so retries land outside the adapter's
+    // busy window instead of failing instantly again.
+    std::map<std::string, std::chrono::steady_clock::time_point> lastWakeAttempt;
 
     // Connect+wake the given stations concurrently (one thread each) and
     // adopt the successful controllers. Skips unmanaged/already-managed ones.

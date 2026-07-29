@@ -79,7 +79,10 @@ void BaseStationController::Disconnect()
 
 bool BaseStationController::ConnectToDevice(const std::function<bool()>& shouldAbort)
 {
-    const int retryCount = 3;
+    // Growing backoff: when the adapter is busy (connecting to another
+    // station or scanning), BlueZ rejects connects instantly - rapid-fire
+    // retries just burn through the attempts inside the same busy window.
+    const int retryCount = 5;
     for (int i = 0; i < retryCount; i++)
     {
         if (shouldAbort && shouldAbort())
@@ -88,7 +91,7 @@ bool BaseStationController::ConnectToDevice(const std::function<bool()>& shouldA
         }
         if (i > 0)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            std::this_thread::sleep_for(std::chrono::milliseconds(500 * i));
         }
 
         if (client->ConnectDevice(devicePath))
