@@ -306,9 +306,18 @@ void PostRegister(GuiState& state, WorkerQueue& worker, bool enable)
                 ok = enable ? vrreg::RegisterManifest(true, false, &error)
                             : vrreg::DisableAutoLaunch(false, &error);
             }
+            if (ok && enable)
+            {
+                std::string detail;
+                if (!vrreg::VerifyPersistedOnDisk(true, &detail))
+                {
+                    ok = false;
+                    error = detail + " - start SteamVR from Steam and try again";
+                }
+            }
             if (ok)
             {
-                state.SetStatus(enable ? "Auto-start with SteamVR enabled"
+                state.SetStatus(enable ? "Auto-start with SteamVR enabled (verified)"
                                        : "Auto-start with SteamVR disabled",
                                 false);
             }

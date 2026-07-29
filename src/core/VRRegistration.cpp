@@ -2,7 +2,10 @@
 
 #include <limits.h>
 #include <unistd.h>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 
 namespace vrreg
 {
@@ -90,10 +93,28 @@ bool RegisterImpl(vr::IVRApplications* apps, bool setAutoLaunch, bool verbose,
                         verbose, error);
             return false;
         }
-        if (verbose)
-        {
-            std::cout << "Auto-launch enabled\n";
-        }
+    }
+
+    // Do not trust the return codes alone - read the state back. A headless
+    // vrserver auto-spawned by VR_Init(Utility) has been seen accepting the
+    // manifest and then not persisting anything.
+    if (!apps->IsApplicationInstalled(APP_KEY))
+    {
+        ReportError("Registration did not persist - start SteamVR normally (from Steam) "
+                    "and try again",
+                    verbose, error);
+        return false;
+    }
+    if (setAutoLaunch && !apps->GetApplicationAutoLaunch(APP_KEY))
+    {
+        ReportError("Auto-launch flag did not persist - start SteamVR normally (from Steam) "
+                    "and try again",
+                    verbose, error);
+        return false;
+    }
+    if (setAutoLaunch && verbose)
+    {
+        std::cout << "Auto-launch enabled (verified)\n";
     }
 
     return true;
@@ -178,6 +199,70 @@ bool DisableAutoLaunch(bool verbose, std::string* error)
     {
         std::cout << "Auto-launch disabled\n";
     }
+    return true;
+}
+
+bool VerifyPersistedOnDisk(bool expectAutoLaunch, std::string* detail)
+{
+    const char* home = std::getenv("HOME");
+    if (!home)
+    {
+        return true;  // cannot check - do not block on it
+    }
+
+    const std::string candidates[] = {
+        std::string(home) + "/.local/share/Steam/config",
+        std::string(home) + "/.steam/steam/config",
+        std::string(home) + "/.steam/root/config",
+    };
+
+    std::string configDir;
+    for (const auto& dir : candidates)
+    {
+        std::ifstream probe(dir + "/appconfig.json");
+        if (probe.is_open())
+        {
+            configDir = dir;
+            break;
+        }
+    }
+    if (configDir.empty())
+    {
+        return true;  // no Steam config found to verify against
+    }
+
+    const std::string manifestPath = ExecutableDir() + "/manifest.vrmanifest";
+
+    std::ifstream appconfig(configDir + "/appconfig.json");
+    std::string contents((std::istreambuf_iterator<char>(appconfig)),
+                         std::istreambuf_iterator<char>());
+    if (contents.find(manifestPath) == std::string::npos)
+    {
+        if (detail)
+        {
+            *detail = "Steam did not persist the manifest registration (" + manifestPath +
+                      " missing from " + configDir + "/appconfig.json)";
+        }
+        return false;
+    }
+
+    if (expectAutoLaunch)
+    {
+        std::ifstream appcfg(configDir + "/vrappconfig/" + APP_KEY + ".vrappconfig");
+        std::string cfg((std::istreambuf_iterator<char>(appcfg)),
+                        std::istreambuf_iterator<char>());
+        if (cfg.find("\"autolaunch\"") == std::string::npos ||
+            cfg.find("true") == std::string::npos)
+        {
+            if (detail)
+            {
+                *detail = "Steam did not persist the auto-launch flag (" + configDir +
+                          "/vrappconfig/" + APP_KEY + ".vrappconfig)";
+            }
+            return false;
+        }
+    }
+
     return true;
 }
 

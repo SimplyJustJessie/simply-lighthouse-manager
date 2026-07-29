@@ -89,4 +89,12 @@ bool DisableAutoLaunch(bool verbose, std::string* error = nullptr);
 
 Status CheckRegistration();
 
+// File-level verification against Steam's own config store (appconfig.json
+// manifest list + the app's .vrappconfig). Call AFTER the VR session that
+// registered is closed - a transient headless vrserver has been seen
+// accepting a registration in memory without persisting it. Returns true
+// when persisted (or when no Steam config dir can be found to check);
+// writes a human-readable explanation to *detail on failure.
+bool VerifyPersistedOnDisk(bool expectAutoLaunch, std::string* detail);
+
 }  // namespace vrreg

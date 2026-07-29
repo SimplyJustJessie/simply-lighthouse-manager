@@ -706,7 +706,20 @@ int main(int argc, char* argv[])
     }
     else if (command == "--register-manifest")
     {
-        return vrreg::RegisterManifest(true, true) ? 0 : 1;
+        if (!vrreg::RegisterManifest(true, true))
+        {
+            return 1;
+        }
+        std::string detail;
+        if (!vrreg::VerifyPersistedOnDisk(true, &detail))
+        {
+            std::cerr << detail << "\n"
+                      << "Start SteamVR normally (from Steam), then run "
+                         "--register-manifest again.\n";
+            return 1;
+        }
+        std::cout << "Registration verified in Steam's config store\n";
+        return 0;
     }
     else if (command == "--disable-autolaunch")
     {
