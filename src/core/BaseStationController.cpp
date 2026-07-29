@@ -4,6 +4,7 @@
 #include <cctype>
 #include <chrono>
 #include <iostream>
+#include <mutex>
 #include <thread>
 
 #include "BlueZClient.h"
@@ -11,6 +12,12 @@
 
 namespace
 {
+
+// One Bluetooth adapter can only initiate one LE connection at a time;
+// parallel wake workers issuing simultaneous connects just make BlueZ
+// reject the losers instantly. Serialize the connect step process-wide
+// (GATT traffic on established links still runs concurrently).
+std::mutex g_bleConnectMutex;
 
 std::string ToLowerCopy(std::string s)
 {
@@ -94,7 +101,12 @@ bool BaseStationController::ConnectToDevice(const std::function<bool()>& shouldA
             std::this_thread::sleep_for(std::chrono::milliseconds(500 * i));
         }
 
-        if (client->ConnectDevice(devicePath))
+        bool ok;
+        {
+            std::lock_guard<std::mutex> lock(g_bleConnectMutex);
+            ok = client->ConnectDevice(devicePath);
+        }
+        if (ok)
         {
             // Give BlueZ a moment to settle the connection before GATT access.
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
