@@ -62,6 +62,25 @@ Auto-start can be toggled off and on again at any time from the same GUI section
 
 From then on SteamVR starts and stops the service automatically; updates apply in place without re-registration. Settings live in `~/.config/lighthouse-manager/config.ini`, and a running service picks up changes within ~15 seconds.
 
+## RF channels
+
+Every Base Station 2.0 broadcasts on an RF channel (1-16). **Two stations on the
+same channel interfere with each other and cause tracking glitches**, so each
+station in a playspace needs its own.
+
+- **GUI**: press *Read channels*; the table's "Ch" column shows each station's
+  channel and turns red when it is shared. Click a channel to change it. Shared
+  channels are also listed in a warning under the table.
+- **CLI**:
+  ```bash
+  lighthouse-manager --channels                  # read all channels, report conflicts
+  lighthouse-manager --set-channel LHB-XXXXXXXX 5
+  ```
+
+Reading or changing a channel connects to the station over Bluetooth, so the
+station has to be awake (or in standby). Changes are verified by reading the
+value back, and take effect immediately.
+
 ## CLI reference
 
 ```bash
@@ -69,6 +88,8 @@ lighthouse-manager --list                  # scan and list base stations
 lighthouse-manager --wake <id>             # wake  (id, MAC, or name substring)
 lighthouse-manager --sleep <id>            # sleep
 lighthouse-manager --standby <id>          # standby
+lighthouse-manager --channels              # show RF channels + conflict warnings
+lighthouse-manager --set-channel <id> <n>  # set RF channel (1-16)
 lighthouse-manager --auto                  # run the SteamVR-session service in the foreground
 lighthouse-manager --register-manifest     # register + enable auto-start (SteamVR must run)
 lighthouse-manager --disable-autolaunch    # disable auto-start
