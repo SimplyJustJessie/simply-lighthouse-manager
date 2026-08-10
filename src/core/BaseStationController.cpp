@@ -241,6 +241,112 @@ bool BaseStationController::WriteCharacteristicValue(const std::string& charPath
     return false;
 }
 
+std::string BaseStationController::FindChannelCharacteristic()
+{
+    if (!EnsureConnection())
+    {
+        return "";
+    }
+    const std::string servicePath = FindServicePath(LIGHTHOUSE_V2_SERVICE_UUID);
+    if (servicePath.empty())
+    {
+        std::cerr << "Failed to find GATT service\n";
+        return "";
+    }
+    return FindCharacteristicPath(servicePath, V2_CHANNEL_CHAR_UUID);
+}
+
+// Sleep, pause, wake: the station applies a pending channel change as it
+// comes back up (SteamVR restarts base stations for channel changes too).
+bool BaseStationController::PowerCycle()
+{
+    if (!WriteV2PowerCharacteristic(static_cast<uint8_t>(BaseStationCommand::Sleep)))
+    {
+        return false;
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    return WriteV2PowerCharacteristic(static_cast<uint8_t>(BaseStationCommand::Wake));
+}
+
+bool BaseStationController::WaitForAdvertisedChannel(int expected, int seconds)
+{
+    const size_t slash = devicePath.find_last_of('/');
+    if (slash == std::string::npos)
+    {
+        return false;
+    }
+    const std::string adapterPath = devicePath.substr(0, slash);
+
+    // A connected station stops advertising, and BlueZ only refreshes
+    // advertisement properties while a scan is running.
+    Disconnect();
+    bluez::DiscoveryGuard discovery(*client, adapterPath);
+
+    for (int i = 0; i < seconds; i++)
+    {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        for (const auto& [path, interfaces] : client->GetManagedObjects())
+        {
+            if (path != devicePath)
+            {
+                continue;
+            }
+            auto it = interfaces.find("org.bluez.Device1");
+            if (it == interfaces.end())
+            {
+                continue;
+            }
+            auto mfr = it->second.manufacturerData.find(VALVE_COMPANY_ID);
+            if (mfr != it->second.manufacturerData.end() &&
+                ChannelFromValveManufacturerData(mfr->second) == expected)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+ChannelSetResult BaseStationController::SetChannel(int channel)
+{
+    if (channel < LIGHTHOUSE_MIN_CHANNEL || channel > LIGHTHOUSE_MAX_CHANNEL)
+    {
+        std::cerr << "Channel " << channel << " out of range (" << LIGHTHOUSE_MIN_CHANNEL
+                  << "-" << LIGHTHOUSE_MAX_CHANNEL << ")\n";
+        return ChannelSetResult::Failed;
+    }
+    if (stationInfo.isBaseStation1)
+    {
+        std::cerr << "Channel control is only implemented for Base Station 2.0\n";
+        return ChannelSetResult::Failed;
+    }
+
+    const std::string charPath = FindChannelCharacteristic();
+    if (charPath.empty())
+    {
+        std::cerr << "Failed to find the channel characteristic\n";
+        return ChannelSetResult::Failed;
+    }
+
+    const uint8_t value = static_cast<uint8_t>(channel);
+    if (!WriteCharacteristicValue(charPath, &value, 1))
+    {
+        return ChannelSetResult::Failed;
+    }
+
+    PowerCycle();
+
+    // Verified against the advertisement, never a GATT read-back: BlueZ
+    // serves attribute reads from a cache that our own write just populated,
+    // so a read-back confirms nothing.
+    if (WaitForAdvertisedChannel(channel, 60))
+    {
+        stationInfo.channel = channel;
+        return ChannelSetResult::Confirmed;
+    }
+    return ChannelSetResult::WrittenUnconfirmed;
+}
+
 bool BaseStationController::WriteV2PowerCharacteristic(uint8_t value)
 {
     if (!EnsureConnection())

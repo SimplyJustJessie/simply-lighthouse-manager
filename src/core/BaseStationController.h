@@ -13,6 +13,13 @@ namespace bluez
 class Client;
 }
 
+enum class ChannelSetResult
+{
+    Confirmed,           // station is advertising the new channel
+    WrittenUnconfirmed,  // write accepted, not seen yet (applies on restart)
+    Failed,
+};
+
 enum class BaseStationCommand
 {
     Wake = 0x01,
@@ -42,6 +49,13 @@ public:
     bool Standby();
     bool SendWakePacket();
 
+    // Sets the RF channel (1-16, Base Station 2.0 only). Stations latch a new
+    // channel when they restart, so this power-cycles the station and then
+    // waits for it to advertise the new channel. A station that does not
+    // advertise it within the timeout yields WrittenUnconfirmed rather than a
+    // false success - the change usually appears after the next restart.
+    ChannelSetResult SetChannel(int channel);
+
     bool IsConnected() const { return connected; }
     const BaseStationInfo& GetStationInfo() const { return stationInfo; }
 
@@ -51,6 +65,7 @@ private:
     bool connected;
 
     static constexpr const char* V2_POWER_CHAR_UUID = "00001525-1212-efde-1523-785feabcd124";
+    static constexpr const char* V2_CHANNEL_CHAR_UUID = "00001524-1212-efde-1523-785feabcd124";
     static constexpr const char* V1_POWER_CHAR_UUID = "0000cb01-0000-1000-8000-00805f9b34fb";
 
     std::unique_ptr<bluez::Client> client;
@@ -62,4 +77,7 @@ private:
     std::string FindCharacteristicPath(const std::string& servicePath, const std::string& charUuid);
     bool WriteCharacteristicValue(const std::string& charPath, const uint8_t* data, size_t dataLen);
     bool WriteV2PowerCharacteristic(uint8_t value);
+    std::string FindChannelCharacteristic();
+    bool PowerCycle();
+    bool WaitForAdvertisedChannel(int expected, int seconds);
 };
