@@ -33,6 +33,20 @@ std::string SerialFromPrefixedName(const std::string& name, const std::string& f
 
 }  // namespace
 
+int ChannelFromValveManufacturerData(const std::vector<uint8_t>& data)
+{
+    if (data.size() < 3)
+    {
+        return -1;
+    }
+    const int channel = static_cast<int>(data[2]);
+    if (channel < LIGHTHOUSE_MIN_CHANNEL || channel > LIGHTHOUSE_MAX_CHANNEL)
+    {
+        return -1;
+    }
+    return channel;
+}
+
 std::optional<BaseStationInfo> ClassifyStation(const std::string& address,
                                                const std::string& name,
                                                const std::vector<std::string>& serviceUuids)

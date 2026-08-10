@@ -42,9 +42,11 @@ public:
     bool Standby();
     bool SendWakePacket();
 
-    // RF channel (1-16 on Base Station 2.0). ReadChannel returns -1 when the
-    // channel cannot be read; SetChannel verifies by reading the value back.
-    int ReadChannel();
+    // Sets the RF channel (1-16 on Base Station 2.0) and confirms it against
+    // the station's advertisement before reporting success. Reading the
+    // channel is NOT done here: it arrives with discovery (see
+    // ChannelFromValveManufacturerData), which is both free and immune to
+    // BlueZ's GATT attribute cache.
     bool SetChannel(int channel);
 
     bool IsConnected() const { return connected; }
@@ -69,5 +71,6 @@ private:
     bool WriteCharacteristicValue(const std::string& charPath, const uint8_t* data, size_t dataLen);
     std::vector<uint8_t> ReadCharacteristicValue(const std::string& charPath);
     std::string FindChannelCharacteristic();
+    bool VerifyAdvertisedChannel(int expected);
     bool WriteV2PowerCharacteristic(uint8_t value);
 };

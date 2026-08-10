@@ -273,66 +273,6 @@ void PostControl(GuiState& state, WorkerQueue& worker, const BaseStationInfo& st
         });
 }
 
-// Reads every station's RF channel, one BLE connection each, in parallel.
-void PostReadChannels(GuiState& state, WorkerQueue& worker)
-{
-    std::vector<BaseStationInfo> targets;
-    {
-        std::lock_guard<std::mutex> lock(state.m);
-        for (const auto& station : state.stations)
-        {
-            if (state.busyStations.count(station.address))
-            {
-                continue;
-            }
-            state.busyStations.insert(station.address);
-            targets.push_back(station);
-        }
-        state.statusMessage = "Reading channels...";
-        state.statusError = false;
-    }
-    if (targets.empty())
-    {
-        return;
-    }
-
-    worker.Post(
-        [&state, targets]()
-        {
-            std::vector<std::thread> readers;
-            for (const auto& station : targets)
-            {
-                readers.emplace_back(
-                    [&state, station]()
-                    {
-                        int channel = -1;
-                        BaseStationController controller;
-                        if (controller.Connect(station,
-                                               [&state] { return state.quitting.load(); }))
-                        {
-                            channel = controller.ReadChannel();
-                            controller.Disconnect();
-                        }
-
-                        std::lock_guard<std::mutex> lock(state.m);
-                        for (auto& known : state.stations)
-                        {
-                            if (known.address == station.address)
-                            {
-                                known.channel = channel;
-                            }
-                        }
-                        state.busyStations.erase(station.address);
-                    });
-            }
-            for (auto& reader : readers)
-            {
-                reader.join();
-            }
-            state.SetStatus("Channels read", false);
-        });
-}
-
 void PostSetChannel(GuiState& state, WorkerQueue& worker, const BaseStationInfo& station,
                     int channel)
 {
@@ -370,16 +310,16 @@ void PostSetChannel(GuiState& state, WorkerQueue& worker, const BaseStationInfo&
             }
 
             const bool ok = controller.SetChannel(channel);
-            const int actual = ok ? channel : controller.ReadChannel();
             controller.Disconnect();
 
+            if (ok)
             {
                 std::lock_guard<std::mutex> lock(state.m);
                 for (auto& known : state.stations)
                 {
                     if (known.address == station.address)
                     {
-                        known.channel = actual;
+                        known.channel = channel;
                     }
                 }
             }
@@ -540,22 +480,11 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
     ImGui::Spacing();
 
     ImGui::BeginDisabled(scanning);
-    if (ImGui::Button("Scan for Base Stations", ImVec2(-150, 0)))
+    if (ImGui::Button("Scan for Base Stations", ImVec2(-1, 0)))
     {
         PostScan(state, scanWorker);
     }
     ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(stations.empty() || !busyStations.empty());
-    if (ImGui::Button("Read channels", ImVec2(-1, 0)))
-    {
-        PostReadChannels(state, cmdWorker);
-    }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-    {
-        ImGui::SetTooltip("Connects to each station to read its RF channel");
-    }
 
     ImGui::Spacing();
 
@@ -638,13 +567,12 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
                 {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
                 }
+                const bool channelKnown = station.channel >= 0;
                 ImGui::BeginDisabled(busyStations.count(station.address) > 0 ||
-                                     station.isBaseStation1);
+                                     station.isBaseStation1 || !channelKnown);
                 if (ImGui::SmallButton(channelLabel))
                 {
-                    state.pendingChannel[station.address] =
-                        station.channel >= LIGHTHOUSE_MIN_CHANNEL ? station.channel
-                                                                  : LIGHTHOUSE_MIN_CHANNEL;
+                    state.pendingChannel[station.address] = station.channel;
                     ImGui::OpenPopup("set_channel");
                 }
                 ImGui::EndDisabled();
@@ -654,9 +582,19 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
                 }
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
                 {
-                    ImGui::SetTooltip(station.isBaseStation1
-                                          ? "Channel control needs a Base Station 2.0"
-                                          : "RF channel - click to change");
+                    if (station.isBaseStation1)
+                    {
+                        ImGui::SetTooltip("Channel control needs a Base Station 2.0");
+                    }
+                    else if (!channelKnown)
+                    {
+                        ImGui::SetTooltip("Channel unknown - the station must be awake or in\n"
+                                          "standby during a scan to advertise it");
+                    }
+                    else
+                    {
+                        ImGui::SetTooltip("RF channel - click to change");
+                    }
                 }
                 if (ImGui::BeginPopup("set_channel"))
                 {

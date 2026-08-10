@@ -52,6 +52,44 @@ Properties ParsePropertyDict(DBusMessageIter* dictIter)
                     props.booleans[key] = (value != FALSE);
                 }
                 else if (type == DBUS_TYPE_ARRAY &&
+                         dbus_message_iter_get_element_type(&variant) == DBUS_TYPE_DICT_ENTRY)
+                {
+                    // a{qv}: manufacturer id -> advertised byte array
+                    DBusMessageIter dict;
+                    dbus_message_iter_recurse(&variant, &dict);
+                    while (dbus_message_iter_get_arg_type(&dict) == DBUS_TYPE_DICT_ENTRY)
+                    {
+                        DBusMessageIter kv;
+                        dbus_message_iter_recurse(&dict, &kv);
+                        if (dbus_message_iter_get_arg_type(&kv) == DBUS_TYPE_UINT16)
+                        {
+                            uint16_t company = 0;
+                            dbus_message_iter_get_basic(&kv, &company);
+                            dbus_message_iter_next(&kv);
+                            if (dbus_message_iter_get_arg_type(&kv) == DBUS_TYPE_VARIANT)
+                            {
+                                DBusMessageIter bytesVariant;
+                                dbus_message_iter_recurse(&kv, &bytesVariant);
+                                if (dbus_message_iter_get_arg_type(&bytesVariant) == DBUS_TYPE_ARRAY)
+                                {
+                                    DBusMessageIter byteIter;
+                                    dbus_message_iter_recurse(&bytesVariant, &byteIter);
+                                    std::vector<uint8_t> bytes;
+                                    while (dbus_message_iter_get_arg_type(&byteIter) == DBUS_TYPE_BYTE)
+                                    {
+                                        uint8_t value = 0;
+                                        dbus_message_iter_get_basic(&byteIter, &value);
+                                        bytes.push_back(value);
+                                        dbus_message_iter_next(&byteIter);
+                                    }
+                                    props.manufacturerData[company] = std::move(bytes);
+                                }
+                            }
+                        }
+                        dbus_message_iter_next(&dict);
+                    }
+                }
+                else if (type == DBUS_TYPE_ARRAY &&
                          dbus_message_iter_get_element_type(&variant) == DBUS_TYPE_STRING)
                 {
                     DBusMessageIter array;

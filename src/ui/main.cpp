@@ -179,31 +179,6 @@ void ControlBaseStation(const std::string& stationId, BaseStationCommand command
     controller.Disconnect();
 }
 
-// Reads the RF channel of every station, in parallel (one BLE connection
-// each). Stations that cannot be read keep channel == -1.
-void ReadChannels(std::vector<BaseStationInfo>& stations)
-{
-    std::vector<std::thread> workers;
-    for (auto& station : stations)
-    {
-        workers.emplace_back(
-            [&station]()
-            {
-                BaseStationController controller;
-                if (!controller.Connect(station))
-                {
-                    return;
-                }
-                station.channel = controller.ReadChannel();
-                controller.Disconnect();
-            });
-    }
-    for (auto& worker : workers)
-    {
-        worker.join();
-    }
-}
-
 void PrintChannelConflicts(const std::vector<BaseStationInfo>& stations)
 {
     const auto conflicts = FindChannelConflicts(stations);
@@ -244,9 +219,6 @@ int ListChannels()
         return 1;
     }
 
-    std::cout << "Reading channels from " << stations.size() << " base station(s)...\n";
-    ReadChannels(stations);
-
     for (const auto& station : stations)
     {
         std::cout << "  " << station.name << "  (" << station.address << ")  channel ";
@@ -256,7 +228,7 @@ int ListChannels()
         }
         else
         {
-            std::cout << "unknown\n";
+            std::cout << "unknown (station must be awake or in standby to advertise it)\n";
         }
     }
 
@@ -309,19 +281,25 @@ int SetStationChannel(const std::string& stationId, const std::string& channelAr
         return 1;
     }
 
+    const int before = target->channel;
+    if (before < 0)
+    {
+        std::cerr << "Cannot read " << target->name << "'s current channel - it must be "
+                     "awake or in standby to advertise it. Refusing to change a channel "
+                     "blind.\n";
+        return 1;
+    }
+    if (before == channel)
+    {
+        std::cout << target->name << " is already on channel " << channel << "\n";
+        return 0;
+    }
+
     BaseStationController controller;
     if (!controller.Connect(*target))
     {
         std::cerr << "Failed to connect to " << target->name << "\n";
         return 1;
-    }
-
-    const int before = controller.ReadChannel();
-    if (before == channel)
-    {
-        std::cout << target->name << " is already on channel " << channel << "\n";
-        controller.Disconnect();
-        return 0;
     }
 
     const bool ok = controller.SetChannel(channel);
@@ -333,9 +311,7 @@ int SetStationChannel(const std::string& stationId, const std::string& channelAr
         return 1;
     }
 
-    std::cout << "✓ " << target->name << ": channel " << (before >= 0 ? std::to_string(before)
-                                                                      : std::string("unknown"))
-              << " -> " << channel << "\n";
+    std::cout << "✓ " << target->name << ": channel " << before << " -> " << channel << "\n";
     return 0;
 }
 

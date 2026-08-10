@@ -117,11 +117,25 @@ void BaseStationDetector::CollectStations(std::vector<BaseStationInfo>& stations
             continue;
         }
 
-        bool known = std::any_of(stations.begin(), stations.end(),
-                                 [&](const BaseStationInfo& s) { return s.address == station->address; });
-        if (!known)
+        // The RF channel rides along in Valve's advertisement data, so it
+        // comes free with discovery - no connection needed.
+        auto mfr = props.manufacturerData.find(VALVE_COMPANY_ID);
+        if (mfr != props.manufacturerData.end())
+        {
+            station->channel = ChannelFromValveManufacturerData(mfr->second);
+        }
+
+        auto existing = std::find_if(stations.begin(), stations.end(),
+                                     [&](const BaseStationInfo& s)
+                                     { return s.address == station->address; });
+        if (existing == stations.end())
         {
             stations.push_back(*station);
+        }
+        else if (existing->channel < 0 && station->channel >= 0)
+        {
+            // A later advertisement filled in what the first sighting lacked.
+            existing->channel = station->channel;
         }
     }
 }

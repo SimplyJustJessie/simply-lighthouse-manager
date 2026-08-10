@@ -336,22 +336,6 @@ std::string BaseStationController::FindChannelCharacteristic()
     return "";
 }
 
-int BaseStationController::ReadChannel()
-{
-    const std::string charPath = FindChannelCharacteristic();
-    if (charPath.empty())
-    {
-        return -1;
-    }
-
-    const std::vector<uint8_t> value = ReadCharacteristicValue(charPath);
-    if (value.empty())
-    {
-        return -1;
-    }
-    return static_cast<int>(value[0]);
-}
-
 bool BaseStationController::SetChannel(int channel)
 {
     if (channel < LIGHTHOUSE_MIN_CHANNEL || channel > LIGHTHOUSE_MAX_CHANNEL)
@@ -379,19 +363,55 @@ bool BaseStationController::SetChannel(int channel)
         return false;
     }
 
-    // Verify by reading back - the station applies the change asynchronously.
-    for (int i = 0; i < 10; i++)
+    // Verify against the advertisement, not a GATT read-back: BlueZ can
+    // serve attribute reads from its cache, while advertised manufacturer
+    // data always reflects the station's live state. Requires an active
+    // scan for BlueZ to refresh the property, and no connection (a
+    // connected station stops advertising).
+    Disconnect();
+    if (VerifyAdvertisedChannel(channel))
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        const std::vector<uint8_t> readBack = ReadCharacteristicValue(charPath);
-        if (!readBack.empty() && readBack[0] == value)
-        {
-            stationInfo.channel = channel;
-            return true;
-        }
+        stationInfo.channel = channel;
+        return true;
     }
 
-    std::cerr << "Channel write was not confirmed by the station\n";
+    std::cerr << "Channel write was not confirmed by the station's advertisement\n";
+    return false;
+}
+
+bool BaseStationController::VerifyAdvertisedChannel(int expected)
+{
+    // Adapter path is the device path minus its last component.
+    const size_t slash = devicePath.find_last_of('/');
+    if (slash == std::string::npos)
+    {
+        return false;
+    }
+    const std::string adapterPath = devicePath.substr(0, slash);
+
+    bluez::DiscoveryGuard discovery(*client, adapterPath);
+    for (int i = 0; i < 30; i++)  // up to ~15s of advertisements
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        for (const auto& [path, interfaces] : client->GetManagedObjects())
+        {
+            if (path != devicePath)
+            {
+                continue;
+            }
+            auto it = interfaces.find("org.bluez.Device1");
+            if (it == interfaces.end())
+            {
+                continue;
+            }
+            auto mfr = it->second.manufacturerData.find(VALVE_COMPANY_ID);
+            if (mfr != it->second.manufacturerData.end() &&
+                ChannelFromValveManufacturerData(mfr->second) == expected)
+            {
+                return true;
+            }
+        }
+    }
     return false;
 }
 

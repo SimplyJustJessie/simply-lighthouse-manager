@@ -68,18 +68,23 @@ Every Base Station 2.0 broadcasts on an RF channel (1-16). **Two stations on the
 same channel interfere with each other and cause tracking glitches**, so each
 station in a playspace needs its own.
 
-- **GUI**: press *Read channels*; the table's "Ch" column shows each station's
-  channel and turns red when it is shared. Click a channel to change it. Shared
-  channels are also listed in a warning under the table.
+Channels are picked up automatically by every scan - they ride along in the
+station's Bluetooth advertisement, so no connection is needed.
+
+- **GUI**: the table's "Ch" column shows each station's channel and turns red
+  when another station shares it; shared channels are also listed in a warning
+  under the table. Click a channel to change it.
 - **CLI**:
   ```bash
-  lighthouse-manager --channels                  # read all channels, report conflicts
+  lighthouse-manager --channels                  # show channels, report conflicts
   lighthouse-manager --set-channel LHB-XXXXXXXX 5
   ```
 
-Reading or changing a channel connects to the station over Bluetooth, so the
-station has to be awake (or in standby). Changes are verified by reading the
-value back, and take effect immediately.
+A station only advertises while awake or in standby, so a sleeping station
+shows "?" and cannot be changed - the app will not set a channel it cannot
+first read. Changing a channel does connect to the station, and the new
+channel is confirmed against the station's advertisement before the change is
+reported as successful.
 
 ## CLI reference
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <string>
@@ -17,6 +18,8 @@ struct Properties
     std::map<std::string, std::string> strings;                    // STRING / OBJECT_PATH
     std::map<std::string, bool> booleans;                          // BOOLEAN
     std::map<std::string, std::vector<std::string>> stringArrays;  // ARRAY of STRING (e.g. UUIDs)
+    // ManufacturerData: company id -> advertised bytes
+    std::map<uint16_t, std::vector<uint8_t>> manufacturerData;
 
     const std::string* GetString(const std::string& key) const;
     bool GetBool(const std::string& key, bool fallback = false) const;
