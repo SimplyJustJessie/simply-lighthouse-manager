@@ -15,6 +15,7 @@
 #include <deque>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -48,6 +49,7 @@ struct GuiState
     // UI-thread only:
     Config config;
     bool configDirty = false;
+    std::map<std::string, int> pendingChannel;  // address -> channel being edited
 
     // atomics:
     std::atomic<bool> scanning{false};
@@ -271,6 +273,130 @@ void PostControl(GuiState& state, WorkerQueue& worker, const BaseStationInfo& st
         });
 }
 
+// Reads every station's RF channel, one BLE connection each, in parallel.
+void PostReadChannels(GuiState& state, WorkerQueue& worker)
+{
+    std::vector<BaseStationInfo> targets;
+    {
+        std::lock_guard<std::mutex> lock(state.m);
+        for (const auto& station : state.stations)
+        {
+            if (state.busyStations.count(station.address))
+            {
+                continue;
+            }
+            state.busyStations.insert(station.address);
+            targets.push_back(station);
+        }
+        state.statusMessage = "Reading channels...";
+        state.statusError = false;
+    }
+    if (targets.empty())
+    {
+        return;
+    }
+
+    worker.Post(
+        [&state, targets]()
+        {
+            std::vector<std::thread> readers;
+            for (const auto& station : targets)
+            {
+                readers.emplace_back(
+                    [&state, station]()
+                    {
+                        int channel = -1;
+                        BaseStationController controller;
+                        if (controller.Connect(station,
+                                               [&state] { return state.quitting.load(); }))
+                        {
+                            channel = controller.ReadChannel();
+                            controller.Disconnect();
+                        }
+
+                        std::lock_guard<std::mutex> lock(state.m);
+                        for (auto& known : state.stations)
+                        {
+                            if (known.address == station.address)
+                            {
+                                known.channel = channel;
+                            }
+                        }
+                        state.busyStations.erase(station.address);
+                    });
+            }
+            for (auto& reader : readers)
+            {
+                reader.join();
+            }
+            state.SetStatus("Channels read", false);
+        });
+}
+
+void PostSetChannel(GuiState& state, WorkerQueue& worker, const BaseStationInfo& station,
+                    int channel)
+{
+    {
+        std::lock_guard<std::mutex> lock(state.m);
+        if (state.busyStations.count(station.address))
+        {
+            return;
+        }
+        state.busyStations.insert(station.address);
+        state.statusMessage =
+            "Setting " + station.name + " to channel " + std::to_string(channel) + "...";
+        state.statusError = false;
+    }
+
+    worker.Post(
+        [&state, station, channel]()
+        {
+            struct BusyGuard
+            {
+                GuiState& state;
+                const std::string& address;
+                ~BusyGuard()
+                {
+                    std::lock_guard<std::mutex> lock(state.m);
+                    state.busyStations.erase(address);
+                }
+            } busyGuard{state, station.address};
+
+            BaseStationController controller;
+            if (!controller.Connect(station, [&state] { return state.quitting.load(); }))
+            {
+                state.SetStatus("Failed to connect to " + station.name, true);
+                return;
+            }
+
+            const bool ok = controller.SetChannel(channel);
+            const int actual = ok ? channel : controller.ReadChannel();
+            controller.Disconnect();
+
+            {
+                std::lock_guard<std::mutex> lock(state.m);
+                for (auto& known : state.stations)
+                {
+                    if (known.address == station.address)
+                    {
+                        known.channel = actual;
+                    }
+                }
+            }
+
+            if (ok)
+            {
+                state.SetStatus("✓ " + station.name + " is now on channel " +
+                                    std::to_string(channel),
+                                false);
+            }
+            else
+            {
+                state.SetStatus("✗ Failed to set channel on " + station.name, true);
+            }
+        });
+}
+
 void PostRegistrationCheck(GuiState& state, WorkerQueue& worker)
 {
     worker.Post(
@@ -414,11 +540,22 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
     ImGui::Spacing();
 
     ImGui::BeginDisabled(scanning);
-    if (ImGui::Button("Scan for Base Stations", ImVec2(-1, 0)))
+    if (ImGui::Button("Scan for Base Stations", ImVec2(-150, 0)))
     {
         PostScan(state, scanWorker);
     }
     ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(stations.empty() || !busyStations.empty());
+    if (ImGui::Button("Read channels", ImVec2(-1, 0)))
+    {
+        PostReadChannels(state, cmdWorker);
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+    {
+        ImGui::SetTooltip("Connects to each station to read its RF channel");
+    }
 
     ImGui::Spacing();
 
@@ -449,7 +586,9 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
         ImGui::Text("Detected Base Stations: %zu", stations.size());
         ImGui::Spacing();
 
-        if (ImGui::BeginTable("Stations", 6,
+        const auto conflicts = FindChannelConflicts(stations);
+
+        if (ImGui::BeginTable("Stations", 7,
                               ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                                   ImGuiTableFlags_SizingFixedFit))
         {
@@ -457,6 +596,7 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
             ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 80.0f);
             ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 140.0f);
             ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+            ImGui::TableSetupColumn("Ch", ImGuiTableColumnFlags_WidthFixed, 40.0f);
             ImGui::TableSetupColumn("Auto", ImGuiTableColumnFlags_WidthFixed, 40.0f);
             ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, 190.0f);
             ImGui::TableHeadersRow();
@@ -480,6 +620,72 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
                 ImGui::Text("%s", station.isBaseStation1 ? "1.0" : "2.0");
 
                 ImGui::PushID((int)i);
+
+                // Channel: click to edit. Red when another station shares it.
+                ImGui::TableNextColumn();
+                char channelLabel[16];
+                if (station.channel >= 0)
+                {
+                    snprintf(channelLabel, sizeof(channelLabel), "%d", station.channel);
+                }
+                else
+                {
+                    snprintf(channelLabel, sizeof(channelLabel), "?");
+                }
+                const bool channelClash =
+                    station.channel >= 0 && conflicts.count(station.channel) > 0;
+                if (channelClash)
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
+                }
+                ImGui::BeginDisabled(busyStations.count(station.address) > 0 ||
+                                     station.isBaseStation1);
+                if (ImGui::SmallButton(channelLabel))
+                {
+                    state.pendingChannel[station.address] =
+                        station.channel >= LIGHTHOUSE_MIN_CHANNEL ? station.channel
+                                                                  : LIGHTHOUSE_MIN_CHANNEL;
+                    ImGui::OpenPopup("set_channel");
+                }
+                ImGui::EndDisabled();
+                if (channelClash)
+                {
+                    ImGui::PopStyleColor();
+                }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                {
+                    ImGui::SetTooltip(station.isBaseStation1
+                                          ? "Channel control needs a Base Station 2.0"
+                                          : "RF channel - click to change");
+                }
+                if (ImGui::BeginPopup("set_channel"))
+                {
+                    int& pending = state.pendingChannel[station.address];
+                    ImGui::Text("%s", station.name.c_str());
+                    ImGui::SetNextItemWidth(100);
+                    ImGui::InputInt("Channel", &pending);
+                    if (pending < LIGHTHOUSE_MIN_CHANNEL)
+                    {
+                        pending = LIGHTHOUSE_MIN_CHANNEL;
+                    }
+                    if (pending > LIGHTHOUSE_MAX_CHANNEL)
+                    {
+                        pending = LIGHTHOUSE_MAX_CHANNEL;
+                    }
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Valid: %d-%d",
+                                       LIGHTHOUSE_MIN_CHANNEL, LIGHTHOUSE_MAX_CHANNEL);
+                    if (ImGui::Button("Apply"))
+                    {
+                        PostSetChannel(state, cmdWorker, station, pending);
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel"))
+                    {
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndPopup();
+                }
 
                 ImGui::TableNextColumn();
                 bool managed = state.config.IsManaged(station);
@@ -515,6 +721,25 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
             }
 
             ImGui::EndTable();
+        }
+
+        if (!conflicts.empty())
+        {
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.2f, 1.0f));
+            ImGui::TextWrapped(
+                "Warning: base stations sharing an RF channel interfere with each other "
+                "and cause tracking problems. Give each station its own channel:");
+            for (const auto& [channel, names] : conflicts)
+            {
+                std::string joined;
+                for (size_t n = 0; n < names.size(); n++)
+                {
+                    joined += names[n] + (n + 1 < names.size() ? ", " : "");
+                }
+                ImGui::BulletText("Channel %d: %s", channel, joined.c_str());
+            }
+            ImGui::PopStyleColor();
         }
     }
 

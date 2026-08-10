@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "BaseStationDetector.h"
 
@@ -41,6 +42,11 @@ public:
     bool Standby();
     bool SendWakePacket();
 
+    // RF channel (1-16 on Base Station 2.0). ReadChannel returns -1 when the
+    // channel cannot be read; SetChannel verifies by reading the value back.
+    int ReadChannel();
+    bool SetChannel(int channel);
+
     bool IsConnected() const { return connected; }
     const BaseStationInfo& GetStationInfo() const { return stationInfo; }
 
@@ -50,6 +56,7 @@ private:
     bool connected;
 
     static constexpr const char* V2_POWER_CHAR_UUID = "00001525-1212-efde-1523-785feabcd124";
+    static constexpr const char* V2_CHANNEL_CHAR_UUID = "00001524-1212-efde-1523-785feabcd124";
     static constexpr const char* V1_POWER_CHAR_UUID = "0000cb01-0000-1000-8000-00805f9b34fb";
 
     std::unique_ptr<bluez::Client> client;
@@ -60,5 +67,7 @@ private:
     std::string FindServicePath(const std::string& serviceUuid);
     std::string FindCharacteristicPath(const std::string& servicePath, const std::string& charUuid);
     bool WriteCharacteristicValue(const std::string& charPath, const uint8_t* data, size_t dataLen);
+    std::vector<uint8_t> ReadCharacteristicValue(const std::string& charPath);
+    std::string FindChannelCharacteristic();
     bool WriteV2PowerCharacteristic(uint8_t value);
 };

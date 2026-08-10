@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -14,9 +15,22 @@ struct BaseStationInfo
     bool isBaseStation1;
     bool isConnected;
     bool isPowered;
+    int channel;  // RF channel, -1 until read from the station
 
-    BaseStationInfo() : isBaseStation1(false), isConnected(false), isPowered(false) {}
+    BaseStationInfo()
+        : isBaseStation1(false), isConnected(false), isPowered(false), channel(-1)
+    {
+    }
 };
+
+// Valid RF channels for Base Station 2.0.
+inline constexpr int LIGHTHOUSE_MIN_CHANNEL = 1;
+inline constexpr int LIGHTHOUSE_MAX_CHANNEL = 16;
+
+// Channels used by more than one station, mapped to the names sharing them.
+// Two stations on one channel interfere and degrade tracking.
+std::map<int, std::vector<std::string>> FindChannelConflicts(
+    const std::vector<BaseStationInfo>& stations);
 
 namespace bluez
 {

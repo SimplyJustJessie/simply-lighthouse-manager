@@ -8,6 +8,29 @@
 #include "BlueZClient.h"
 #include "StationClassifier.h"
 
+std::map<int, std::vector<std::string>> FindChannelConflicts(
+    const std::vector<BaseStationInfo>& stations)
+{
+    std::map<int, std::vector<std::string>> byChannel;
+    for (const auto& station : stations)
+    {
+        if (station.channel >= 0)
+        {
+            byChannel[station.channel].push_back(station.name);
+        }
+    }
+
+    std::map<int, std::vector<std::string>> conflicts;
+    for (auto& [channel, names] : byChannel)
+    {
+        if (names.size() > 1)
+        {
+            conflicts[channel] = names;
+        }
+    }
+    return conflicts;
+}
+
 BaseStationDetector::BaseStationDetector() : initialized(false)
 {
 }
