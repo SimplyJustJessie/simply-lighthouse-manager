@@ -49,7 +49,6 @@ struct GuiState
     // UI-thread only:
     Config config;
     bool configDirty = false;
-    std::map<std::string, int> pendingChannel;  // address -> channel being edited
 
     // atomics:
     std::atomic<bool> scanning{false};
@@ -273,70 +272,6 @@ void PostControl(GuiState& state, WorkerQueue& worker, const BaseStationInfo& st
         });
 }
 
-void PostSetChannel(GuiState& state, WorkerQueue& worker, const BaseStationInfo& station,
-                    int channel)
-{
-    {
-        std::lock_guard<std::mutex> lock(state.m);
-        if (state.busyStations.count(station.address))
-        {
-            return;
-        }
-        state.busyStations.insert(station.address);
-        state.statusMessage =
-            "Setting " + station.name + " to channel " + std::to_string(channel) + "...";
-        state.statusError = false;
-    }
-
-    worker.Post(
-        [&state, station, channel]()
-        {
-            struct BusyGuard
-            {
-                GuiState& state;
-                const std::string& address;
-                ~BusyGuard()
-                {
-                    std::lock_guard<std::mutex> lock(state.m);
-                    state.busyStations.erase(address);
-                }
-            } busyGuard{state, station.address};
-
-            BaseStationController controller;
-            if (!controller.Connect(station, [&state] { return state.quitting.load(); }))
-            {
-                state.SetStatus("Failed to connect to " + station.name, true);
-                return;
-            }
-
-            const bool ok = controller.SetChannel(channel);
-            controller.Disconnect();
-
-            if (ok)
-            {
-                std::lock_guard<std::mutex> lock(state.m);
-                for (auto& known : state.stations)
-                {
-                    if (known.address == station.address)
-                    {
-                        known.channel = channel;
-                    }
-                }
-            }
-
-            if (ok)
-            {
-                state.SetStatus("✓ " + station.name + " is now on channel " +
-                                    std::to_string(channel),
-                                false);
-            }
-            else
-            {
-                state.SetStatus("✗ Failed to set channel on " + station.name, true);
-            }
-        });
-}
-
 void PostRegistrationCheck(GuiState& state, WorkerQueue& worker)
 {
     worker.Post(
@@ -550,86 +485,42 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
 
                 ImGui::PushID((int)i);
 
-                // Channel: click to edit. Red when another station shares it.
+                // Channel: read-only. Base stations accept power commands over
+                // Bluetooth but ignore channel writes (confirmed on hardware
+                // and in LighthouseRedox); SteamVR changes channels over the
+                // lighthouse radio link instead.
                 ImGui::TableNextColumn();
-                char channelLabel[16];
+                const bool channelClash =
+                    station.channel >= 0 && conflicts.count(station.channel) > 0;
                 if (station.channel >= 0)
                 {
-                    snprintf(channelLabel, sizeof(channelLabel), "%d", station.channel);
+                    if (channelClash)
+                    {
+                        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%d",
+                                           station.channel);
+                    }
+                    else
+                    {
+                        ImGui::Text("%d", station.channel);
+                    }
                 }
                 else
                 {
-                    snprintf(channelLabel, sizeof(channelLabel), "?");
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "?");
                 }
-                const bool channelClash =
-                    station.channel >= 0 && conflicts.count(station.channel) > 0;
-                if (channelClash)
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
                 {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
-                }
-                // A scan streams stations in as they are found, so channels
-                // are only trustworthy once it has finished.
-                const bool channelKnown = station.channel >= 0;
-                ImGui::BeginDisabled(scanning || busyStations.count(station.address) > 0 ||
-                                     station.isBaseStation1 || !channelKnown);
-                if (ImGui::SmallButton(channelLabel))
-                {
-                    state.pendingChannel[station.address] = station.channel;
-                    ImGui::OpenPopup("set_channel");
-                }
-                ImGui::EndDisabled();
-                if (channelClash)
-                {
-                    ImGui::PopStyleColor();
-                }
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal |
-                                         ImGuiHoveredFlags_AllowWhenDisabled))
-                {
-                    if (station.isBaseStation1)
-                    {
-                        ImGui::SetTooltip("Channel control needs a Base Station 2.0");
-                    }
-                    else if (scanning)
-                    {
-                        ImGui::SetTooltip("Waiting for the scan to finish");
-                    }
-                    else if (!channelKnown)
+                    if (station.channel < 0)
                     {
                         ImGui::SetTooltip("Channel unknown - the station must be awake or in\n"
                                           "standby during a scan to advertise it");
                     }
                     else
                     {
-                        ImGui::SetTooltip("RF channel - click to change");
+                        ImGui::SetTooltip("RF channel. To change it, use SteamVR:\n"
+                                          "Devices > Base Station Settings >\n"
+                                          "Configure Base Station Channels");
                     }
-                }
-                if (ImGui::BeginPopup("set_channel"))
-                {
-                    int& pending = state.pendingChannel[station.address];
-                    ImGui::Text("%s", station.name.c_str());
-                    ImGui::SetNextItemWidth(100);
-                    ImGui::InputInt("Channel", &pending);
-                    if (pending < LIGHTHOUSE_MIN_CHANNEL)
-                    {
-                        pending = LIGHTHOUSE_MIN_CHANNEL;
-                    }
-                    if (pending > LIGHTHOUSE_MAX_CHANNEL)
-                    {
-                        pending = LIGHTHOUSE_MAX_CHANNEL;
-                    }
-                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Valid: %d-%d",
-                                       LIGHTHOUSE_MIN_CHANNEL, LIGHTHOUSE_MAX_CHANNEL);
-                    if (ImGui::Button("Apply"))
-                    {
-                        PostSetChannel(state, cmdWorker, station, pending);
-                        ImGui::CloseCurrentPopup();
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Cancel"))
-                    {
-                        ImGui::CloseCurrentPopup();
-                    }
-                    ImGui::EndPopup();
                 }
 
                 ImGui::TableNextColumn();
@@ -674,7 +565,9 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.2f, 1.0f));
             ImGui::TextWrapped(
                 "Warning: base stations sharing an RF channel interfere with each other "
-                "and cause tracking problems. Give each station its own channel:");
+                "and cause tracking problems. Give each station its own channel in "
+                "SteamVR: Devices > Base Station Settings > Configure Base Station "
+                "Channels.");
             for (const auto& [channel, names] : conflicts)
             {
                 std::string joined;

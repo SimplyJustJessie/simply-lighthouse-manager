@@ -41,7 +41,6 @@ void PrintUsage(const char* programName)
     std::cout << "  --standby <id>           Put a base station to standby (by ID or address)\n";
     std::cout << "  --channels               Show the RF channel of each base station and\n";
     std::cout << "                           warn about stations sharing a channel\n";
-    std::cout << "  --set-channel <id> <n>   Set a base station's RF channel (1-16)\n";
     std::cout << "  --auto                   Manage base stations for the current SteamVR session\n";
     std::cout << "                           (used by the SteamVR auto-launch entry)\n";
     std::cout << "  --list-managed           Show the auto-manage configuration\n";
@@ -60,7 +59,6 @@ void PrintUsage(const char* programName)
     std::cout << "  " << programName << " --sleep D4:1D:FE:B1:FE:E8\n";
     std::cout << "  " << programName << " --unmanage LHB-699A51BC\n";
     std::cout << "  " << programName << " --channels\n";
-    std::cout << "  " << programName << " --set-channel LHB-699A51BC 3\n";
     std::cout << "\nNote: Base station ID can be:\n";
     std::cout << "  - 8-character ID (e.g., 699A51BC)\n";
     std::cout << "  - MAC address (e.g., D4:1D:FE:B1:FE:E8)\n";
@@ -198,9 +196,9 @@ void PrintChannelConflicts(const std::vector<BaseStationInfo>& stations)
         }
         std::cout << "\n";
     }
-    std::cout << "  Give each station its own channel, e.g.:\n"
-              << "    lighthouse-manager --set-channel " << conflicts.begin()->second.front()
-              << " <1-" << LIGHTHOUSE_MAX_CHANNEL << ">\n";
+    std::cout << "  Give each station its own channel in SteamVR:\n"
+              << "    Devices > Base Station Settings > Configure Base Station Channels\n"
+              << "  (base stations do not accept channel changes over Bluetooth)\n";
 }
 
 int ListChannels()
@@ -233,85 +231,6 @@ int ListChannels()
     }
 
     PrintChannelConflicts(stations);
-    return 0;
-}
-
-int SetStationChannel(const std::string& stationId, const std::string& channelArg)
-{
-    int channel = 0;
-    try
-    {
-        channel = std::stoi(channelArg);
-    }
-    catch (const std::exception&)
-    {
-        std::cerr << "Invalid channel: " << channelArg << "\n";
-        return 1;
-    }
-
-    if (channel < LIGHTHOUSE_MIN_CHANNEL || channel > LIGHTHOUSE_MAX_CHANNEL)
-    {
-        std::cerr << "Channel must be between " << LIGHTHOUSE_MIN_CHANNEL << " and "
-                  << LIGHTHOUSE_MAX_CHANNEL << "\n";
-        return 1;
-    }
-
-    BaseStationDetector detector;
-    if (!detector.Initialize())
-    {
-        std::cerr << "Failed to initialize Bluetooth\n";
-        return 1;
-    }
-
-    auto stations = detector.ScanForBaseStations(10);
-    BaseStationInfo* target = nullptr;
-    for (auto& station : stations)
-    {
-        if (station.id == stationId || station.address == stationId ||
-            station.serial == stationId || station.name.find(stationId) != std::string::npos)
-        {
-            target = &station;
-            break;
-        }
-    }
-
-    if (!target)
-    {
-        std::cerr << "Base station not found: " << stationId << "\n";
-        return 1;
-    }
-
-    const int before = target->channel;
-    if (before < 0)
-    {
-        std::cerr << "Cannot read " << target->name << "'s current channel - it must be "
-                     "awake or in standby to advertise it. Refusing to change a channel "
-                     "blind.\n";
-        return 1;
-    }
-    if (before == channel)
-    {
-        std::cout << target->name << " is already on channel " << channel << "\n";
-        return 0;
-    }
-
-    BaseStationController controller;
-    if (!controller.Connect(*target))
-    {
-        std::cerr << "Failed to connect to " << target->name << "\n";
-        return 1;
-    }
-
-    const bool ok = controller.SetChannel(channel);
-    controller.Disconnect();
-
-    if (!ok)
-    {
-        std::cerr << "✗ Failed to set channel on " << target->name << "\n";
-        return 1;
-    }
-
-    std::cout << "✓ " << target->name << ": channel " << before << " -> " << channel << "\n";
     return 0;
 }
 
@@ -822,17 +741,6 @@ int main(int argc, char* argv[])
     else if (command == "--channels")
     {
         return ListChannels();
-    }
-    else if (command == "--set-channel")
-    {
-        if (argc < 4)
-        {
-            std::cerr << "Error: base station ID and channel required\n";
-            std::cerr << "  " << argv[0] << " --set-channel <id> <1-"
-                      << LIGHTHOUSE_MAX_CHANNEL << ">\n";
-            return 1;
-        }
-        return SetStationChannel(argv[2], argv[3]);
     }
     else if (command == "--list-managed")
     {

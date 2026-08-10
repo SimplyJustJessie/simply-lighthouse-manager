@@ -73,18 +73,19 @@ station's Bluetooth advertisement, so no connection is needed.
 
 - **GUI**: the table's "Ch" column shows each station's channel and turns red
   when another station shares it; shared channels are also listed in a warning
-  under the table. Click a channel to change it.
-- **CLI**:
-  ```bash
-  lighthouse-manager --channels                  # show channels, report conflicts
-  lighthouse-manager --set-channel LHB-XXXXXXXX 5
-  ```
+  under the table.
+- **CLI**: `lighthouse-manager --channels`
 
 A station only advertises while awake or in standby, so a sleeping station
-shows "?" and cannot be changed - the app will not set a channel it cannot
-first read. Changing a channel does connect to the station, and the new
-channel is confirmed against the station's advertisement before the change is
-reported as successful.
+shows "?".
+
+**Changing a channel is done in SteamVR**, under *Devices > Base Station
+Settings > Configure Base Station Channels*. Base stations accept power
+commands over Bluetooth but ignore channel writes - verified on hardware
+(writes are accepted and silently do nothing, awake or asleep) and consistent
+with [LighthouseRedox](https://github.com/nairol/LighthouseRedox), which
+documents the mode/channel as read-only over BLE. SteamVR configures channels
+over the lighthouse radio link instead.
 
 ## CLI reference
 
@@ -94,7 +95,6 @@ lighthouse-manager --wake <id>             # wake  (id, MAC, or name substring)
 lighthouse-manager --sleep <id>            # sleep
 lighthouse-manager --standby <id>          # standby
 lighthouse-manager --channels              # show RF channels + conflict warnings
-lighthouse-manager --set-channel <id> <n>  # set RF channel (1-16)
 lighthouse-manager --auto                  # run the SteamVR-session service in the foreground
 lighthouse-manager --register-manifest     # register + enable auto-start (SteamVR must run)
 lighthouse-manager --disable-autolaunch    # disable auto-start
