@@ -567,8 +567,10 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
                 {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
                 }
+                // A scan streams stations in as they are found, so channels
+                // are only trustworthy once it has finished.
                 const bool channelKnown = station.channel >= 0;
-                ImGui::BeginDisabled(busyStations.count(station.address) > 0 ||
+                ImGui::BeginDisabled(scanning || busyStations.count(station.address) > 0 ||
                                      station.isBaseStation1 || !channelKnown);
                 if (ImGui::SmallButton(channelLabel))
                 {
@@ -580,11 +582,16 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
                 {
                     ImGui::PopStyleColor();
                 }
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal |
+                                         ImGuiHoveredFlags_AllowWhenDisabled))
                 {
                     if (station.isBaseStation1)
                     {
                         ImGui::SetTooltip("Channel control needs a Base Station 2.0");
+                    }
+                    else if (scanning)
+                    {
+                        ImGui::SetTooltip("Waiting for the scan to finish");
                     }
                     else if (!channelKnown)
                     {
