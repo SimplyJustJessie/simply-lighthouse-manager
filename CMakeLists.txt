@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(LighthouseManager VERSION 1.3.0 LANGUAGES CXX)
+project(LighthouseManager VERSION 1.3.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -191,7 +191,7 @@ set(LIGHTHOUSE_BINDIR "${CMAKE_INSTALL_FULL_BINDIR}")
 configure_file(packaging/simply-lighthouse-manager.service.in
     ${CMAKE_BINARY_DIR}/simply-lighthouse-manager.service @ONLY)
 install(FILES ${CMAKE_BINARY_DIR}/simply-lighthouse-manager.service
-    DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/systemd/user")
+    DESTINATION "lib/systemd/user")
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/packaging/lighthouse-manager-gui.desktop")
     install(FILES packaging/lighthouse-manager-gui.desktop

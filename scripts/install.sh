@@ -12,7 +12,8 @@ cd "$PROJECT_ROOT"
 # The build uses the pinned OpenVR SDK (see CMakeLists.txt for why the
 # system openvr package is not used); bundle its loader library next to the
 # binaries where the $ORIGIN rpath finds it.
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIGHTHOUSE_BUNDLE_OPENVR=ON
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIGHTHOUSE_BUNDLE_OPENVR=ON \
+      -DCMAKE_INSTALL_PREFIX="$PREFIX"
 cmake --build build --parallel
 cmake --install build --prefix "$PREFIX"
 
