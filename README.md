@@ -1,6 +1,6 @@
 # Simply Lighthouse Manager
 
-Manage SteamVR base station (lighthouse) power over Bluetooth LE on Linux: wake your base stations when SteamVR starts and put them to sleep when it exits.
+Manage SteamVR base station (lighthouse) power over Bluetooth LE on Linux: wake your base stations when your VR runtime starts and put them to sleep when it exits. Works with **SteamVR, WiVRn and Monado**.
 
 **This is a fork** of [openvr-lighthouse-manager-linux](https://github.com/xi-ve/openvr-lighthouse-manager-linux) by [@xi-ve](https://github.com/xi-ve), which is itself a Linux port of [OVR Lighthouse Manager](https://github.com/kurotu/OVR-Lighthouse-Manager) by [kurotu](https://github.com/kurotu). This fork reworks the internals (BlueZ D-Bus instead of `bluetoothctl` scraping, a crash-free threading model, a headless SteamVR service instead of an auto-launched GUI window) and adds per-station auto-manage configuration.
 
@@ -10,7 +10,7 @@ Manage SteamVR base station (lighthouse) power over Bluetooth LE on Linux: wake 
 
 Two binaries share one core:
 
-- **`lighthouse-manager`** - CLI. Also the headless service SteamVR auto-launches (`--auto`): it wakes your configured stations on SteamVR start, keeps them awake, and puts them to sleep on SteamVR exit.
+- **`lighthouse-manager`** - CLI, and the headless service that wakes your configured stations for a VR session and sleeps them afterwards. Run it as a systemd user service that follows any runtime (`--watch`, works with WiVRn/Monado/SteamVR), or let SteamVR auto-launch it (`--auto`).
 - **`lighthouse-manager-gui`** - desktop app for manual control (wake/sleep/standby per station) and configuration (choose which stations are auto-managed, enable/disable auto-start). Safe to use while the service is running.
 
 ## Installation
@@ -124,6 +124,7 @@ lighthouse-manager --sleep <id>            # sleep
 lighthouse-manager --standby <id>          # standby
 lighthouse-manager --channels              # show RF channels + conflict warnings
 lighthouse-manager --set-channel <id> <n>  # set RF channel (1-16); restarts the station
+lighthouse-manager --watch                 # follow any VR runtime (WiVRn/Monado/SteamVR)
 lighthouse-manager --auto                  # run the SteamVR-session service in the foreground
 lighthouse-manager --register-manifest     # register + enable auto-start (SteamVR must run)
 lighthouse-manager --disable-autolaunch    # disable auto-start
@@ -141,7 +142,7 @@ windowrule = float, class:lighthouse-manager
 ## Requirements
 
 - Linux with BlueZ (running `bluetoothd`), Bluetooth 4.0+ adapter
-- SteamVR (for auto-management; manual control works without it)
+- A VR runtime for auto-management (SteamVR, WiVRn or Monado); manual control works without any
 - Base Station 2.0 fully supported; 1.0 (HTC BS) detection works, power control not yet implemented
 
 ## Credits
