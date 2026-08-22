@@ -62,6 +62,30 @@ Auto-start can be toggled off and on again at any time from the same GUI section
 
 From then on SteamVR starts and stops the service automatically; updates apply in place without re-registration. Settings live in `~/.config/lighthouse-manager/config.ini`, and a running service picks up changes within ~15 seconds.
 
+## Using it with WiVRn, Monado, or without SteamVR
+
+Base station control is plain Bluetooth - it never needed SteamVR. The
+`--watch` service wakes and sleeps your stations alongside *any* VR runtime by
+watching for its process (`vrserver`, `wivrn-server`, `monado-service`), with
+no manifest, registration or runtime SDK involved:
+
+```bash
+systemctl --user enable --now simply-lighthouse-manager
+```
+
+That is the whole setup. Start WiVRn however you normally do (dashboard or
+`systemctl --user start wivrn.service`) and the stations wake with it; stop it
+and they sleep. Station selection is the same config as everywhere else
+(`--manage`, or the GUI's Auto checkboxes).
+
+From-source installs get the unit in `~/.config/systemd/user/`; the AUR package
+installs it system-wide. Logs go to
+`~/.local/state/lighthouse-manager/auto.log`.
+
+`--watch` also covers SteamVR, so it is a fine alternative to the SteamVR
+auto-launch registration below - use one or the other, not both (a second
+instance exits immediately anyway).
+
 ## RF channels
 
 Every Base Station 2.0 broadcasts on an RF channel (1-16). **Two stations on the

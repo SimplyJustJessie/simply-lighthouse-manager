@@ -24,6 +24,17 @@ case ":$PATH:" in
     *) echo "[?] Note: $PREFIX/bin is not on your PATH" ;;
 esac
 
+UNIT_DIR="$HOME/.config/systemd/user"
+UNIT_SRC="$PREFIX/lib/systemd/user/simply-lighthouse-manager.service"
+if [ -f "$UNIT_SRC" ]; then
+    mkdir -p "$UNIT_DIR"
+    cp "$UNIT_SRC" "$UNIT_DIR/"
+    systemctl --user daemon-reload 2>/dev/null || true
+    echo "[+] systemd user unit installed"
+    echo "[?] For WiVRn/Monado (or instead of SteamVR auto-launch):"
+    echo "[?]     systemctl --user enable --now simply-lighthouse-manager"
+fi
+
 echo ""
 echo "[?] To auto-start with SteamVR, run once while SteamVR is running:"
 echo "[?]     $PREFIX/bin/lighthouse-manager --register-manifest"

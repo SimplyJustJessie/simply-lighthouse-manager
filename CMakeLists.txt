@@ -114,6 +114,7 @@ add_library(lighthouse_core STATIC
     src/core/BaseStationDetector.cpp
     src/core/BlueZClient.cpp
     src/core/Config.cpp
+    src/core/RuntimeWatcher.cpp
     src/core/StationClassifier.cpp
     src/core/SteamVRWatcher.cpp
     src/core/VRRegistration.cpp
@@ -185,6 +186,12 @@ foreach(_bin lighthouse-manager lighthouse-manager-gui)
              SYMBOLIC)
     ")
 endforeach()
+
+set(LIGHTHOUSE_BINDIR "${CMAKE_INSTALL_FULL_BINDIR}")
+configure_file(packaging/simply-lighthouse-manager.service.in
+    ${CMAKE_BINARY_DIR}/simply-lighthouse-manager.service @ONLY)
+install(FILES ${CMAKE_BINARY_DIR}/simply-lighthouse-manager.service
+    DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/systemd/user")
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/packaging/lighthouse-manager-gui.desktop")
     install(FILES packaging/lighthouse-manager-gui.desktop

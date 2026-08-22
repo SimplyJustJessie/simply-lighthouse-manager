@@ -1,5 +1,7 @@
 #include "SteamVRWatcher.h"
 
+#include "RuntimeWatcher.h"
+
 #include <dirent.h>
 #include <openvr.h>
 #include <cctype>
@@ -15,53 +17,7 @@ SteamVRWatcher::SteamVRWatcher(vr::IVRSystem* system)
 
 bool SteamVRWatcher::IsVrServerProcessRunning()
 {
-    DIR* proc = opendir("/proc");
-    if (!proc)
-    {
-        return false;
-    }
-
-    bool found = false;
-    struct dirent* entry;
-    while (!found && (entry = readdir(proc)) != nullptr)
-    {
-        // Only numeric directories are processes.
-        const char* name = entry->d_name;
-        bool numeric = *name != '\0';
-        for (const char* c = name; *c; c++)
-        {
-            if (!std::isdigit(static_cast<unsigned char>(*c)))
-            {
-                numeric = false;
-                break;
-            }
-        }
-        if (!numeric)
-        {
-            continue;
-        }
-
-        char commPath[280];
-        std::snprintf(commPath, sizeof(commPath), "/proc/%s/comm", name);
-        FILE* comm = std::fopen(commPath, "r");
-        if (!comm)
-        {
-            continue;
-        }
-        char buffer[64] = {0};
-        if (std::fgets(buffer, sizeof(buffer), comm))
-        {
-            buffer[strcspn(buffer, "\n")] = '\0';
-            if (std::strcmp(buffer, "vrserver") == 0)
-            {
-                found = true;
-            }
-        }
-        std::fclose(comm);
-    }
-
-    closedir(proc);
-    return found;
+    return runtime::IsProcessRunning("vrserver");
 }
 
 SteamVRWatcher::Status SteamVRWatcher::Poll()

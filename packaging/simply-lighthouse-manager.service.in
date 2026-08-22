@@ -1,0 +1,14 @@
+[Unit]
+Description=Base station power management for VR runtimes (SteamVR, WiVRn, Monado)
+Documentation=https://github.com/SimplyJustJessie/simply-lighthouse-manager
+
+[Service]
+Type=simple
+# Watches for a VR runtime process and wakes/sleeps the configured base
+# stations with it. No runtime SDK, manifest or registration involved.
+ExecStart=@LIGHTHOUSE_BINDIR@/lighthouse-manager --watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

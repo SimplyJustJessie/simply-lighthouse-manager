@@ -20,6 +20,7 @@
 #include "../core/BaseStationController.h"
 #include "../core/BaseStationDetector.h"
 #include "../core/Config.h"
+#include "../core/RuntimeWatcher.h"
 #include "../core/SteamVRWatcher.h"
 #include "../core/VRRegistration.h"
 
@@ -45,6 +46,10 @@ void PrintUsage(const char* programName)
     std::cout << "                           station restarts to apply the change\n";
     std::cout << "  --auto                   Manage base stations for the current SteamVR session\n";
     std::cout << "                           (used by the SteamVR auto-launch entry)\n";
+    std::cout << "  --watch                  Watch for any VR runtime (SteamVR, WiVRn, Monado)\n";
+    std::cout << "                           and wake/sleep stations with it. Needs no\n";
+    std::cout << "                           registration; run it from the systemd user unit:\n";
+    std::cout << "                             systemctl --user enable --now simply-lighthouse-manager\n";
     std::cout << "  --list-managed           Show the auto-manage configuration\n";
     std::cout << "  --manage <id>            Include a base station in auto-management\n";
     std::cout << "                           (auto-management is opt-in; nothing is managed\n";
@@ -563,6 +568,136 @@ bool AcquireSingleInstanceLock()
     return true;  // fd intentionally kept open until process exit
 }
 
+// Runtime-agnostic service: wakes the configured stations whenever a VR
+// runtime process appears and sleeps them when it goes away. Needs no
+// runtime SDK, no manifest and no registration, so it works for WiVRn and
+// Monado exactly as it does for SteamVR. Meant to be run from the systemd
+// user unit (or by hand) and left running.
+int WatchRuntimes()
+{
+    std::signal(SIGINT, signalHandler);
+    std::signal(SIGTERM, signalHandler);
+
+    if (!AcquireSingleInstanceLock())
+    {
+        std::cerr << "[watch] Another service instance is already running - exiting\n";
+        return 0;
+    }
+
+    RedirectOutputToLogFile();
+
+    Config config;
+    config.Load();
+
+    BaseStationDetector detector;
+    if (!detector.Initialize())
+    {
+        std::cerr << "[watch] Failed to initialize Bluetooth - exiting\n";
+        return 1;
+    }
+
+    AutoManager manager(detector, config);
+    std::string activeRuntime;
+    auto lastKeepAlive = std::chrono::steady_clock::now();
+    auto lastConfigCheck = lastKeepAlive;
+    auto lastRuntimeCheck = lastKeepAlive - std::chrono::seconds(5);
+    std::string current;
+    auto configMtime = Config::FileMtime();
+
+    std::cout << "[watch] Watching for a VR runtime (SteamVR, WiVRn, Monado)\n";
+
+    while (!g_signal)
+    {
+        // Scanning /proc is cheap but not free; twice a second forever would
+        // be wasteful for a service that idles most of the day.
+        if (std::chrono::steady_clock::now() - lastRuntimeCheck >= std::chrono::seconds(2))
+        {
+            lastRuntimeCheck = std::chrono::steady_clock::now();
+            current = runtime::RunningRuntime();
+        }
+
+        if (!current.empty() && activeRuntime.empty())
+        {
+            activeRuntime = current;
+            std::cout << "[watch] " << activeRuntime << " started - waking stations\n";
+
+            // Cancel the wake early if the runtime disappears mid-way, so a
+            // short session does not leave us waking stations for minutes.
+            CancellationToken token;
+            std::atomic<bool> wakeDone{false};
+            std::thread abortGuard(
+                [&token, &wakeDone]()
+                {
+                    while (!wakeDone)
+                    {
+                        if (runtime::RunningRuntime().empty())
+                        {
+                            token.Cancel();
+                            return;
+                        }
+                        std::this_thread::sleep_for(std::chrono::seconds(1));
+                    }
+                });
+            manager.WakeManaged(token);
+            wakeDone = true;
+            abortGuard.join();
+
+            std::cout << "[watch] Managing " << manager.ManagedCount() << " base station(s)\n";
+            if (manager.ManagedCount() == 0)
+            {
+                std::cout << "[watch] Auto-management is opt-in: mark stations with\n"
+                             "[watch]   lighthouse-manager --manage <id>\n"
+                             "[watch] or the GUI's Auto checkboxes.\n";
+            }
+            lastKeepAlive = std::chrono::steady_clock::now();
+        }
+        else if (current.empty() && !activeRuntime.empty())
+        {
+            std::cout << "[watch] " << activeRuntime << " stopped - sleeping stations\n";
+            manager.SleepManagedFast(std::chrono::milliseconds(8000));
+            activeRuntime.clear();
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+
+        if (!activeRuntime.empty() && now - lastKeepAlive >= std::chrono::seconds(5))
+        {
+            manager.KeepAlive();
+            lastKeepAlive = now;
+        }
+
+        if (now - lastConfigCheck >= std::chrono::seconds(15))
+        {
+            lastConfigCheck = now;
+            auto mtime = Config::FileMtime();
+            if (mtime != configMtime)
+            {
+                configMtime = mtime;
+                std::cout << "[watch] Config changed - reloading\n";
+                Config fresh;
+                fresh.Load();
+                CancellationToken token;
+                manager.UpdateConfig(fresh, token);
+                config = fresh;
+                if (!activeRuntime.empty())
+                {
+                    manager.WakeManaged(token);
+                }
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+
+    std::cout << "[watch] Received termination signal\n";
+    if (manager.ManagedCount() > 0)
+    {
+        manager.SleepManagedFast(std::chrono::milliseconds(8000));
+    }
+    std::cout << "[watch] Done\n";
+    return 0;
+}
+
 // Headless SteamVR-session service. Single-threaded OpenVR ownership: the
 // context is initialized once here and never touched from another thread.
 int AutoManage()
@@ -827,6 +962,10 @@ int main(int argc, char* argv[])
     else if (command == "--auto")
     {
         return AutoManage();
+    }
+    else if (command == "--watch")
+    {
+        return WatchRuntimes();
     }
     else if (command == "--channels")
     {

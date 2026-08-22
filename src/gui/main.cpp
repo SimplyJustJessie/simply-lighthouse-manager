@@ -29,6 +29,7 @@
 #include "../core/BaseStationController.h"
 #include "../core/BaseStationDetector.h"
 #include "../core/Config.h"
+#include "../core/RuntimeWatcher.h"
 #include "../core/SteamVRWatcher.h"
 #include "../core/VRRegistration.h"
 
@@ -45,6 +46,7 @@ struct GuiState
     std::set<std::string> busyStations;  // addresses with an in-flight command
     vrreg::Status regStatus;
     bool regStatusKnown = false;
+    std::string activeRuntime;  // "SteamVR" / "WiVRn" / "Monado", empty if none
 
     // UI-thread only:
     Config config;
@@ -443,6 +445,7 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
     std::set<std::string> busyStations;
     vrreg::Status regStatus;
     bool regStatusKnown;
+    std::string activeRuntime;
     {
         std::lock_guard<std::mutex> lock(state.m);
         statusMessage = state.statusMessage;
@@ -451,6 +454,7 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
         busyStations = state.busyStations;
         regStatus = state.regStatus;
         regStatusKnown = state.regStatusKnown;
+        activeRuntime = state.activeRuntime;
     }
 
     if (ImGui::BeginMenuBar())
@@ -472,14 +476,15 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
 
     ImGui::Spacing();
     ImGui::Text("Lighthouse Manager - Linux Edition");
-    ImGui::SameLine(ImGui::GetWindowWidth() - 160);
-    if (steamvrUp)
+    ImGui::SameLine(ImGui::GetWindowWidth() - 180);
+    if (!activeRuntime.empty())
     {
-        ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "SteamVR: running");
+        ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "%s: running",
+                           activeRuntime.c_str());
     }
     else
     {
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "SteamVR: stopped");
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No VR runtime running");
     }
     ImGui::Separator();
     ImGui::Spacing();
@@ -910,6 +915,7 @@ int main(int, char**)
         WorkerQueue vrWorker(state);
 
         state.steamvrRunning = SteamVRWatcher::IsVrServerProcessRunning();
+        state.activeRuntime = runtime::RunningRuntime();
         PostScan(state, scanWorker);
         PostRegistrationCheck(state, vrWorker);
 
@@ -923,6 +929,11 @@ int main(int, char**)
             if (now - lastSteamVRCheck >= std::chrono::seconds(2))
             {
                 lastSteamVRCheck = now;
+                {
+                    std::string detected = runtime::RunningRuntime();
+                    std::lock_guard<std::mutex> lock(state.m);
+                    state.activeRuntime = std::move(detected);
+                }
                 bool wasRunning = state.steamvrRunning.exchange(
                     SteamVRWatcher::IsVrServerProcessRunning());
                 if (!wasRunning && state.steamvrRunning)
