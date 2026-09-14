@@ -130,6 +130,10 @@ bool Config::Load(const std::string& path)
             {
                 entry.managed = ParseBool(value, true);
             }
+            else if (key == "v1_id")
+            {
+                entry.v1Id = value;
+            }
         }
     }
 
@@ -178,6 +182,10 @@ bool Config::Save(const std::string& path) const
                 file << "name = " << entry.name << "\n";
             }
             file << "managed = " << (entry.managed ? "true" : "false") << "\n";
+            if (!entry.v1Id.empty())
+            {
+                file << "v1_id = " << entry.v1Id << "\n";
+            }
         }
 
         file.flush();
@@ -205,6 +213,12 @@ bool Config::IsManaged(const BaseStationInfo& station) const
     return it != stations.end() && it->second.managed;
 }
 
+std::string Config::V1Id(const std::string& address) const
+{
+    auto it = stations.find(address);
+    return it == stations.end() ? std::string() : it->second.v1Id;
+}
+
 void Config::SetManaged(const std::string& address, const std::string& name, bool managed)
 {
     StationEntry& entry = stations[address];
@@ -213,6 +227,28 @@ void Config::SetManaged(const std::string& address, const std::string& name, boo
         entry.name = name;
     }
     entry.managed = managed;
+}
+
+void Config::SetV1Id(const std::string& address, const std::string& name,
+                     const std::string& id)
+{
+    auto it = stations.find(address);
+    if (it == stations.end())
+    {
+        StationEntry entry;
+        entry.name = name;
+        // Identifying a station must not change whether it is managed, and a
+        // station with no entry is managed exactly when the mode says all.
+        entry.managed = manageMode == ManageMode::All;
+        entry.v1Id = id;
+        stations.emplace(address, std::move(entry));
+        return;
+    }
+    if (!name.empty())
+    {
+        it->second.name = name;
+    }
+    it->second.v1Id = id;
 }
 
 std::optional<time_t> Config::FileMtime(const std::string& path)

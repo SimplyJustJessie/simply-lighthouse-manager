@@ -52,6 +52,20 @@ void AutoManager::WakeStationsParallel(const std::vector<BaseStationInfo>& stati
             }
             continue;
         }
+        // A 1.0 station we cannot address is left alone entirely - connecting
+        // to it would only end in a command we are unable to build.
+        uint8_t v1IdBytes[4];
+        if (station.isBaseStation1 &&
+            !BaseStationController::ParseV1Id(config.V1Id(station.address), v1IdBytes))
+        {
+            if (warnedExcluded.insert(station.address).second)
+            {
+                std::cout << "[auto] Skipping " << station.name
+                          << " (Base Station 1.0 without a valid ID - set one in the GUI's"
+                             " ID column or with --set-v1-id)\n";
+            }
+            continue;
+        }
         auto attempt = lastWakeAttempt.find(station.address);
         if (attempt != lastWakeAttempt.end() &&
             std::chrono::steady_clock::now() - attempt->second < std::chrono::seconds(5))
@@ -75,6 +89,7 @@ void AutoManager::WakeStationsParallel(const std::vector<BaseStationInfo>& stati
             {
                 auto abort = [&token] { return token.IsCancelled(); };
                 auto controller = std::make_unique<BaseStationController>();
+                controller->SetV1Id(config.V1Id(target->address));
                 bool ok = controller->Connect(*target, abort);
                 if (ok)
                 {
@@ -268,6 +283,7 @@ void AutoManager::UpdateConfig(const Config& newConfig, CancellationToken& token
     {
         if (config.IsManaged(controller->GetStationInfo()))
         {
+            controller->SetV1Id(config.V1Id(controller->GetStationInfo().address));
             kept.push_back(std::move(controller));
         }
         else

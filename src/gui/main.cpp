@@ -193,8 +193,10 @@ void PostScan(GuiState& state, WorkerQueue& worker)
         });
 }
 
+// v1Id is the configured Base Station 1.0 ID; it is ignored for 2.0 stations
+// and for 1.0 stations the caller has already checked it is usable.
 void PostControl(GuiState& state, WorkerQueue& worker, const BaseStationInfo& station,
-                 BaseStationCommand command)
+                 BaseStationCommand command, const std::string& v1Id = std::string())
 {
     std::string commandName;
     switch (command)
@@ -222,7 +224,7 @@ void PostControl(GuiState& state, WorkerQueue& worker, const BaseStationInfo& st
     }
 
     worker.Post(
-        [&state, station, command, commandName]()
+        [&state, station, command, commandName, v1Id]()
         {
             // Clears the per-station busy marker on every exit path,
             // including exceptions (the worker catches those).
@@ -240,6 +242,7 @@ void PostControl(GuiState& state, WorkerQueue& worker, const BaseStationInfo& st
             state.SetStatus("Connecting to " + station.name + "...", false);
 
             BaseStationController controller;
+            controller.SetV1Id(v1Id);
             if (!controller.Connect(station, [&state] { return state.quitting.load(); }))
             {
                 state.SetStatus("Failed to connect to " + station.name, true);
@@ -532,7 +535,7 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
                                   ImGuiTableFlags_SizingFixedFit))
         {
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 120.0f);
-            ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+            ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 90.0f);
             ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 140.0f);
             ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 40.0f);
             ImGui::TableSetupColumn("Ch", ImGuiTableColumnFlags_WidthFixed, 40.0f);
@@ -543,6 +546,13 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
             for (size_t i = 0; i < stations.size(); ++i)
             {
                 const auto& station = stations[i];
+                // 1.0 stations cannot be commanded without the ID from their
+                // back label, which they do not advertise - the user types it
+                // into the ID column and it is stored in the config.
+                const std::string v1Id = state.config.V1Id(station.address);
+                uint8_t v1IdBytes[4];
+                const bool needsV1Id =
+                    station.isBaseStation1 && !BaseStationController::ParseV1Id(v1Id, v1IdBytes);
 
                 ImGui::TableNextRow();
 
@@ -550,7 +560,34 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
                 ImGui::Text("%s", station.name.c_str());
 
                 ImGui::TableNextColumn();
-                ImGui::Text("%s", station.id.c_str());
+                if (station.isBaseStation1)
+                {
+                    char idBuf[9] = {0};
+                    snprintf(idBuf, sizeof(idBuf), "%s", v1Id.c_str());
+                    // Keyed by address, not row index: a scan that finishes
+                    // mid-edit must not move the edit to another station.
+                    ImGui::PushID(station.address.c_str());
+                    ImGui::SetNextItemWidth(84.0f);
+                    if (ImGui::InputTextWithHint("##v1id", "8 hex", idBuf, sizeof(idBuf),
+                                                 ImGuiInputTextFlags_CharsHexadecimal |
+                                                     ImGuiInputTextFlags_CharsUppercase))
+                    {
+                        state.config.SetV1Id(station.address, station.name, idBuf);
+                        state.configDirty = true;
+                    }
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                    {
+                        ImGui::SetTooltip(
+                            "Base Station 1.0 ID: the 8 character code printed on the\n"
+                            "station's back label. Its wake and sleep commands carry it,\n"
+                            "and it is not broadcast, so it has to be typed in.");
+                    }
+                    ImGui::PopID();
+                }
+                else
+                {
+                    ImGui::Text("%s", station.id.c_str());
+                }
 
                 ImGui::TableNextColumn();
                 ImGui::Text("%s", station.address.c_str());
@@ -644,22 +681,36 @@ void BuildUI(GuiState& state, WorkerQueue& scanWorker, WorkerQueue& cmdWorker,
                 }
 
                 ImGui::TableNextColumn();
-                ImGui::BeginDisabled(busyStations.count(station.address) > 0);
-                if (ImGui::SmallButton("Wake"))
+                const bool busy = busyStations.count(station.address) > 0;
+                auto commandButton = [&](const char* label, BaseStationCommand command,
+                                         bool supported, const char* unsupportedHint)
                 {
-                    PostControl(state, cmdWorker, station, BaseStationCommand::Wake);
-                }
+                    ImGui::BeginDisabled(busy || needsV1Id || !supported);
+                    if (ImGui::SmallButton(label))
+                    {
+                        PostControl(state, cmdWorker, station, command, v1Id);
+                    }
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal |
+                                             ImGuiHoveredFlags_AllowWhenDisabled))
+                    {
+                        if (!supported)
+                        {
+                            ImGui::SetTooltip("%s", unsupportedHint);
+                        }
+                        else if (needsV1Id)
+                        {
+                            ImGui::SetTooltip("Enter this station's 8 character ID in the\n"
+                                              "ID column first (it is on the back label)");
+                        }
+                    }
+                };
+                commandButton("Wake", BaseStationCommand::Wake, true, "");
                 ImGui::SameLine();
-                if (ImGui::SmallButton("Sleep"))
-                {
-                    PostControl(state, cmdWorker, station, BaseStationCommand::Sleep);
-                }
+                commandButton("Sleep", BaseStationCommand::Sleep, true, "");
                 ImGui::SameLine();
-                if (ImGui::SmallButton("Standby"))
-                {
-                    PostControl(state, cmdWorker, station, BaseStationCommand::Standby);
-                }
-                ImGui::EndDisabled();
+                commandButton("Standby", BaseStationCommand::Standby, !station.isBaseStation1,
+                              "Base Station 1.0 has no standby mode");
 
                 ImGui::PopID();
             }
@@ -830,7 +881,9 @@ bool InitGLFW()
     glfwWindowHintString(GLFW_WAYLAND_APP_ID, "lighthouse-manager");
 #endif
 
-    const int windowWidth = 640;
+    // Wide enough for the station table's full width: at 640 the Actions
+    // column's last button was cut off.
+    const int windowWidth = 700;
     const int windowHeight = 520;
     glfwWindow = glfwCreateWindow(windowWidth, windowHeight, "Lighthouse Manager",
                                   nullptr, nullptr);

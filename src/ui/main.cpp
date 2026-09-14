@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -55,6 +56,9 @@ void PrintUsage(const char* programName)
     std::cout << "                           (auto-management is opt-in; nothing is managed\n";
     std::cout << "                           until you mark stations or run --manage-all)\n";
     std::cout << "  --unmanage <id>          Exclude a base station from auto-management\n";
+    std::cout << "  --set-v1-id <id> <hex>   Record a Base Station 1.0's 8 digit ID (printed\n";
+    std::cout << "                           on its back label). 1.0 stations cannot be woken\n";
+    std::cout << "                           or slept until this is set; 2.0 never needs it\n";
     std::cout << "  --manage-all             Manage every discovered station automatically\n";
     std::cout << "  --register-manifest      Register with SteamVR and enable auto-launch\n";
     std::cout << "  --disable-autolaunch     Disable SteamVR auto-launch\n";
@@ -65,6 +69,7 @@ void PrintUsage(const char* programName)
     std::cout << "  " << programName << " --wake 699A51BC\n";
     std::cout << "  " << programName << " --sleep D4:1D:FE:B1:FE:E8\n";
     std::cout << "  " << programName << " --unmanage LHB-699A51BC\n";
+    std::cout << "  " << programName << " --set-v1-id D4:1D:FE:B1:FE:E8 1A2B3C4D\n";
     std::cout << "  " << programName << " --channels\n";
     std::cout << "\nNote: Base station ID can be:\n";
     std::cout << "  - 8-character ID (e.g., 699A51BC)\n";
@@ -102,6 +107,12 @@ void ListBaseStations()
         std::cout << "     ID: " << station.id << "\n";
         std::cout << "     Address: " << station.address << "\n";
         std::cout << "     Type: " << (station.isBaseStation1 ? "1.0" : "2.0") << "\n";
+        if (station.isBaseStation1)
+        {
+            const std::string v1Id = config.V1Id(station.address);
+            std::cout << "     1.0 ID: " << (v1Id.empty() ? "not set (--set-v1-id)" : v1Id)
+                      << "\n";
+        }
         std::cout << "     Auto-managed: " << (config.IsManaged(station) ? "yes" : "no") << "\n";
     }
 }
@@ -146,7 +157,24 @@ void ControlBaseStation(const std::string& stationId, BaseStationCommand command
         return;
     }
 
+    Config config;
+    config.Load();
+    const std::string v1Id = config.V1Id(targetStation->address);
+
+    // Checked before connecting: a 1.0 station without an ID can never be
+    // commanded, and a ten second connect attempt would say nothing useful.
+    uint8_t v1IdBytes[4];
+    if (targetStation->isBaseStation1 && !BaseStationController::ParseV1Id(v1Id, v1IdBytes))
+    {
+        std::cerr << targetStation->name
+                  << " is a Base Station 1.0, so it needs the 8 digit ID printed on its back "
+                     "label:\n  lighthouse-manager --set-v1-id " << targetStation->address
+                  << " <id>\n";
+        return;
+    }
+
     BaseStationController controller;
+    controller.SetV1Id(v1Id);
     if (!controller.Connect(*targetStation))
     {
         std::cerr << "Failed to connect to base station\n";
@@ -356,8 +384,111 @@ void ListManagedConfig()
         {
             std::cout << " (" << entry.name << ")";
         }
-        std::cout << " - " << (entry.managed ? "managed" : "excluded") << "\n";
+        std::cout << " - " << (entry.managed ? "managed" : "excluded");
+        if (!entry.v1Id.empty())
+        {
+            std::cout << ", 1.0 ID " << entry.v1Id;
+        }
+        std::cout << "\n";
     }
+}
+
+// Resolves a user supplied ID, address or name fragment to a station,
+// preferring config entries (instant) and falling back to a scan. Prints why
+// it failed and returns false when nothing matches.
+bool ResolveStation(const Config& config, const std::string& idOrAddress, std::string& address,
+                    std::string& name)
+{
+    address.clear();
+    name.clear();
+
+    auto entry = config.stations.find(idOrAddress);
+    if (entry != config.stations.end())
+    {
+        address = entry->first;
+        name = entry->second.name;
+        return true;
+    }
+    for (const auto& [addr, configured] : config.stations)
+    {
+        if (!configured.name.empty() &&
+            configured.name.find(idOrAddress) != std::string::npos)
+        {
+            address = addr;
+            name = configured.name;
+            return true;
+        }
+    }
+
+    std::cout << "Station not in config - scanning...\n";
+    BaseStationDetector detector;
+    if (!detector.Initialize())
+    {
+        std::cerr << "Failed to initialize Bluetooth\n";
+        return false;
+    }
+    auto stations = detector.ScanForBaseStations(10);
+    for (const auto& station : stations)
+    {
+        if (station.id == idOrAddress || station.address == idOrAddress ||
+            station.serial == idOrAddress ||
+            station.name.find(idOrAddress) != std::string::npos)
+        {
+            address = station.address;
+            name = station.name;
+            return true;
+        }
+    }
+
+    std::cerr << "Base station not found: " << idOrAddress << "\n";
+    if (!stations.empty())
+    {
+        std::cerr << "Available:\n";
+        for (const auto& station : stations)
+        {
+            std::cerr << "  " << station.name << " (" << station.address << ")\n";
+        }
+    }
+    return false;
+}
+
+int SetStationV1Id(const std::string& idOrAddress, const std::string& v1Id)
+{
+    std::string normalized = v1Id;
+    for (char& c : normalized)
+    {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+
+    uint8_t bytes[4];
+    if (!BaseStationController::ParseV1Id(normalized, bytes))
+    {
+        std::cerr << "Invalid Base Station 1.0 ID: '" << v1Id
+                  << "' (expected exactly 8 hexadecimal digits, e.g. 1A2B3C4D)\n";
+        return 1;
+    }
+
+    Config config;
+    config.Load();
+
+    std::string address;
+    std::string name;
+    if (!ResolveStation(config, idOrAddress, address, name))
+    {
+        return 1;
+    }
+
+    config.SetV1Id(address, name, normalized);
+    if (!config.Save())
+    {
+        std::cerr << "Failed to write " << Config::DefaultPath() << "\n";
+        return 1;
+    }
+
+    std::cout << (name.empty() ? address : name) << " ID set to " << normalized << "\n";
+    std::cout << "Enable auto-management for it with: lighthouse-manager --manage "
+              << address << "\n";
+    return 0;
 }
 
 int SetManagedFlag(const std::string& idOrAddress, bool managed)
@@ -367,61 +498,9 @@ int SetManagedFlag(const std::string& idOrAddress, bool managed)
 
     std::string address;
     std::string name;
-
-    // Resolve against existing config entries first (no scan needed).
-    if (config.stations.count(idOrAddress))
+    if (!ResolveStation(config, idOrAddress, address, name))
     {
-        address = idOrAddress;
-        name = config.stations[idOrAddress].name;
-    }
-    else
-    {
-        for (const auto& [addr, entry] : config.stations)
-        {
-            if (!entry.name.empty() && entry.name.find(idOrAddress) != std::string::npos)
-            {
-                address = addr;
-                name = entry.name;
-                break;
-            }
-        }
-    }
-
-    // Fall back to a scan.
-    if (address.empty())
-    {
-        std::cout << "Station not in config - scanning...\n";
-        BaseStationDetector detector;
-        if (!detector.Initialize())
-        {
-            std::cerr << "Failed to initialize Bluetooth\n";
-            return 1;
-        }
-        auto stations = detector.ScanForBaseStations(10);
-        for (const auto& station : stations)
-        {
-            if (station.id == idOrAddress || station.address == idOrAddress ||
-                station.serial == idOrAddress ||
-                station.name.find(idOrAddress) != std::string::npos)
-            {
-                address = station.address;
-                name = station.name;
-                break;
-            }
-        }
-        if (address.empty())
-        {
-            std::cerr << "Base station not found: " << idOrAddress << "\n";
-            if (!stations.empty())
-            {
-                std::cerr << "Available:\n";
-                for (const auto& station : stations)
-                {
-                    std::cerr << "  " << station.name << " (" << station.address << ")\n";
-                }
-            }
-            return 1;
-        }
+        return 1;
     }
 
     config.SetManaged(address, name, managed);
@@ -1003,6 +1082,16 @@ int main(int argc, char* argv[])
             return 1;
         }
         return SetManagedFlag(argv[2], false);
+    }
+    else if (command == "--set-v1-id")
+    {
+        if (argc < 4)
+        {
+            std::cerr << "Error: base station and ID required\n";
+            std::cerr << "  " << argv[0] << " --set-v1-id <id|address> <8 hex digits>\n";
+            return 1;
+        }
+        return SetStationV1Id(argv[2], argv[3]);
     }
     else if (command == "--manage-all")
     {

@@ -39,6 +39,17 @@ public:
     bool Connect(const BaseStationInfo& station, const std::function<bool()>& shouldAbort = {});
     void Disconnect();
 
+    // Base Station 1.0 only: its power commands carry the station's 8 hex
+    // digit unique ID, which 1.0 stations do not advertise - it comes from the
+    // config, where the user entered it. Without a valid ID every 1.0 command
+    // fails cleanly instead of being sent; 2.0 stations ignore this entirely.
+    void SetV1Id(const std::string& id);
+
+    // True for exactly 8 hexadecimal digits, in which case out receives the
+    // four ID bytes. Never throws - the ID reaches us as unvalidated user
+    // input from the config file or a text box.
+    static bool ParseV1Id(const std::string& text, uint8_t out[4]);
+
     // retryRounds bounds the outer retry loop; the default favors
     // reliability, exit paths pass a small value to stay within SteamVR's
     // shutdown grace period.
@@ -63,10 +74,14 @@ private:
     BaseStationInfo stationInfo;
     std::string devicePath;
     bool connected;
+    std::string v1Id;
 
     static constexpr const char* V2_POWER_CHAR_UUID = "00001525-1212-efde-1523-785feabcd124";
     static constexpr const char* V2_CHANNEL_CHAR_UUID = "00001524-1212-efde-1523-785feabcd124";
     static constexpr const char* V1_POWER_CHAR_UUID = "0000cb01-0000-1000-8000-00805f9b34fb";
+    // 1.0 commands are a fixed 20 byte frame; 1.0 channels are set with the
+    // button on the back of the station, not over Bluetooth.
+    static constexpr size_t V1_COMMAND_LENGTH = 20;
 
     std::unique_ptr<bluez::Client> client;
 
@@ -76,7 +91,16 @@ private:
     std::string FindServicePath(const std::string& serviceUuid);
     std::string FindCharacteristicPath(const std::string& servicePath, const std::string& charUuid);
     bool WriteCharacteristicValue(const std::string& charPath, const uint8_t* data, size_t dataLen);
+    bool WritePowerCharacteristic(const char* serviceUuid, const char* charUuid,
+                                  const uint8_t* data, size_t dataLen);
     bool WriteV2PowerCharacteristic(uint8_t value);
+    // 1.0 helpers. IsV1 keys off the classifier's verdict; BuildV1Command
+    // reports why it failed and returns false rather than sending a
+    // half-formed frame.
+    bool IsV1() const;
+    bool BuildV1Command(BaseStationCommand command, uint8_t out[V1_COMMAND_LENGTH],
+                        bool quiet = false) const;
+    bool WriteV1PowerCommand(const uint8_t* command);
     std::string FindChannelCharacteristic();
     bool PowerCycle();
     bool WaitForAdvertisedChannel(int expected, int seconds);

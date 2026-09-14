@@ -12,6 +12,24 @@
 namespace
 {
 
+// Value of one hexadecimal digit, or -1 when the character is not one.
+int HexDigit(char c)
+{
+    if (c >= '0' && c <= '9')
+    {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f')
+    {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F')
+    {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
 std::string ToLowerCopy(std::string s)
 {
     for (char& c : s)
@@ -347,28 +365,132 @@ ChannelSetResult BaseStationController::SetChannel(int channel)
     return ChannelSetResult::WrittenUnconfirmed;
 }
 
-bool BaseStationController::WriteV2PowerCharacteristic(uint8_t value)
+bool BaseStationController::WritePowerCharacteristic(const char* serviceUuid,
+                                                     const char* charUuid, const uint8_t* data,
+                                                     size_t dataLen)
 {
     if (!EnsureConnection())
     {
         return false;
     }
 
-    std::string servicePath = FindServicePath(LIGHTHOUSE_V2_SERVICE_UUID);
+    std::string servicePath = FindServicePath(serviceUuid);
     if (servicePath.empty())
     {
         std::cerr << "Failed to find GATT service\n";
         return false;
     }
 
-    std::string charPath = FindCharacteristicPath(servicePath, V2_POWER_CHAR_UUID);
+    std::string charPath = FindCharacteristicPath(servicePath, charUuid);
     if (charPath.empty())
     {
         std::cerr << "Failed to find power characteristic\n";
         return false;
     }
 
-    return WriteCharacteristicValue(charPath, &value, 1);
+    return WriteCharacteristicValue(charPath, data, dataLen);
+}
+
+bool BaseStationController::WriteV2PowerCharacteristic(uint8_t value)
+{
+    return WritePowerCharacteristic(LIGHTHOUSE_V2_SERVICE_UUID, V2_POWER_CHAR_UUID, &value, 1);
+}
+
+bool BaseStationController::WriteV1PowerCommand(const uint8_t* command)
+{
+    return WritePowerCharacteristic(LIGHTHOUSE_V1_SERVICE_UUID, V1_POWER_CHAR_UUID, command,
+                                    V1_COMMAND_LENGTH);
+}
+
+void BaseStationController::SetV1Id(const std::string& id)
+{
+    v1Id = id;
+}
+
+bool BaseStationController::ParseV1Id(const std::string& text, uint8_t out[4])
+{
+    if (text.size() != 8)
+    {
+        return false;
+    }
+    for (int i = 0; i < 4; i++)
+    {
+        const int high = HexDigit(text[i * 2]);
+        const int low = HexDigit(text[i * 2 + 1]);
+        if (high < 0 || low < 0)
+        {
+            return false;
+        }
+        out[i] = static_cast<uint8_t>((high << 4) | low);
+    }
+    return true;
+}
+
+bool BaseStationController::IsV1() const
+{
+    // The classifier decides this from the advertised name or the 1.0 service
+    // UUID; the name prefixes stay as a backstop for BaseStationInfo values
+    // that were not built by it.
+    return stationInfo.isBaseStation1 || stationInfo.name.rfind("HTC BS", 0) == 0 ||
+           stationInfo.name.rfind("VIVE BS", 0) == 0;
+}
+
+// Layout as sent by OVR Lighthouse Manager on Windows: a 20 byte frame of
+// 0x12, three command bytes, the station ID in reverse byte order, then zero
+// padding.
+bool BaseStationController::BuildV1Command(BaseStationCommand command,
+                                           uint8_t out[V1_COMMAND_LENGTH], bool quiet) const
+{
+    uint8_t idBytes[4] = {0};
+    if (!ParseV1Id(v1Id, idBytes))
+    {
+        if (!quiet)
+        {
+            if (v1Id.empty())
+            {
+                std::cerr << stationInfo.name
+                          << " is a Base Station 1.0 - it needs its 8 digit ID before it can "
+                             "be controlled (GUI: the ID column; CLI: --set-v1-id <station> "
+                             "<id>)\n";
+            }
+            else
+            {
+                std::cerr << "Ignoring invalid Base Station 1.0 ID for " << stationInfo.name
+                          << ": '" << v1Id << "' (expected 8 hexadecimal digits)\n";
+            }
+        }
+        return false;
+    }
+
+    for (size_t i = 0; i < V1_COMMAND_LENGTH; i++)
+    {
+        out[i] = 0;
+    }
+    out[0] = 0x12;
+    if (command == BaseStationCommand::Wake)
+    {
+        out[1] = 0x00;
+        out[2] = 0x00;
+        out[3] = 0x00;
+    }
+    else
+    {
+        // 1.0 stations have no standby mode; sleeping is the closest thing,
+        // and is what an auto-managed station needs at session end.
+        if (command == BaseStationCommand::Standby && !quiet)
+        {
+            std::cerr << stationInfo.name
+                      << ": Base Station 1.0 has no standby mode - sending sleep instead\n";
+        }
+        out[1] = 0x02;
+        out[2] = 0x00;
+        out[3] = 0x01;
+    }
+    out[4] = idBytes[3];
+    out[5] = idBytes[2];
+    out[6] = idBytes[1];
+    out[7] = idBytes[0];
+    return true;
 }
 
 bool BaseStationController::EnsureConnection()
@@ -406,14 +528,14 @@ bool BaseStationController::EnsureConnection()
 bool BaseStationController::SendCommand(BaseStationCommand command, int retryRounds,
                                         const std::function<bool()>& shouldAbort)
 {
-    uint8_t value = static_cast<uint8_t>(command);
+    const uint8_t value = static_cast<uint8_t>(command);
+    const bool isV1 = IsV1();
 
-    bool isV1 = stationInfo.name.rfind("HTC BS", 0) == 0 ||
-                stationInfo.name.rfind("VIVE BS", 0) == 0;
-
-    if (isV1)
+    // Built once, before the radio is touched: an unusable 1.0 ID is a
+    // configuration problem, and retrying it would only delay the failure.
+    uint8_t v1Command[V1_COMMAND_LENGTH] = {0};
+    if (isV1 && !BuildV1Command(command, v1Command))
     {
-        std::cerr << "V1 base station control not yet implemented\n";
         return false;
     }
 
@@ -433,11 +555,14 @@ bool BaseStationController::SendCommand(BaseStationCommand command, int retryRou
 
         // Stations occasionally drop the first write after connecting; send a
         // short burst and count any accepted write as success.
-        bool firstAttempt = WriteV2PowerCharacteristic(value);
+        auto write = [&] {
+            return isV1 ? WriteV1PowerCommand(v1Command) : WriteV2PowerCharacteristic(value);
+        };
+        bool firstAttempt = write();
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        bool secondAttempt = WriteV2PowerCharacteristic(value);
+        bool secondAttempt = write();
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        bool thirdAttempt = WriteV2PowerCharacteristic(value);
+        bool thirdAttempt = write();
 
         if (firstAttempt || secondAttempt || thirdAttempt)
         {
@@ -476,12 +601,17 @@ bool BaseStationController::SendWakePacket()
         return false;
     }
 
-    bool isV1 = stationInfo.name.rfind("HTC BS", 0) == 0 ||
-                stationInfo.name.rfind("VIVE BS", 0) == 0;
-
-    if (isV1)
+    // One write, no retries: this runs every few seconds for the whole
+    // session, so it stays cheap and quiet (a station that has stopped
+    // answering is handled by the caller, not here).
+    if (IsV1())
     {
-        return false;
+        uint8_t v1Command[V1_COMMAND_LENGTH] = {0};
+        if (!BuildV1Command(BaseStationCommand::Wake, v1Command, true))
+        {
+            return false;
+        }
+        return WriteV1PowerCommand(v1Command);
     }
 
     uint8_t value = static_cast<uint8_t>(BaseStationCommand::Wake);
